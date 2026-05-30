@@ -232,7 +232,7 @@ karat:
 
 The style file is merged on top of `default_style.yaml`, so you only need to override the fields you want to change. Colors can be specified as tcell color names (`"white"`, `"grey"`) or RGB hex values (`"#1E1E1E"`). Use `"default"` to inherit your terminal's background or foreground color.
 
-**Ready-made themes** — see [`examples/style/`](examples/style/):
+**Ready-made themes** — see [`examples/style/README.md`](examples/style/README.md) for previews and usage.
 
 ## Development
 
