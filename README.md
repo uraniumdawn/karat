@@ -5,6 +5,8 @@ A powerful Terminal UI (TUI) for Apache Kafka that provides an intuitive, keyboa
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Go Version](https://img.shields.io/badge/go-%3E%3D1.21-blue)
 
+![uranium_v3](examples/style/uranium_v3.png)
+
 ## Table of Contents
 
 - [Core Capabilities](#core-capabilities)
