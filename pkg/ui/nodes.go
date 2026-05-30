@@ -1,0 +1,244 @@
+// Copyright (c) Sergey Petrovsky
+// This source code is licensed under the MIT license found in the
+// LICENSE file in the root directory of this source tree.
+
+package ui
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strconv"
+
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+	"github.com/rs/zerolog/log"
+
+	"github.com/uraniumdawn/karat/pkg/client"
+	"github.com/uraniumdawn/karat/pkg/util"
+)
+
+const (
+	// GetNodesEventType is the event type for fetching nodes.
+	GetNodesEventType EventType = "nodes:get"
+	// GetNodeEventType is the event type for fetching a specific node.
+	GetNodeEventType EventType = "node:get"
+)
+
+// NodesChannel is the channel for node events.
+var NodesChannel = make(chan Event)
+
+// NodeIDURLPair represents a node ID and URL pair.
+type NodeIDURLPair struct {
+	ID  string
+	URL string
+}
+
+// RunNodesEventHandler processes node events from the channel.
+func (app *App) RunNodesEventHandler(ctx context.Context, in chan Event) {
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				log.Debug().Msg("shutting down nodes event handler")
+				return
+			case event := <-in:
+				switch event.Type {
+				case GetNodesEventType:
+					pageName := util.BuildPageKey(app.Selected.Cluster.Name, Nodes)
+					force := event.Payload.Force
+					_, found := app.Cache.Get(pageName)
+					if found && !force {
+						app.SwitchToPage(pageName)
+					} else {
+						app.Nodes()
+					}
+				case GetNodeEventType:
+					nu := event.Payload.Data.(NodeIDURLPair)
+					force := event.Payload.Force
+					nodeID := nu.ID
+					url := nu.URL
+					pageName := util.BuildPageKey(app.Selected.Cluster.Name, Nodes, nodeID)
+					_, found := app.Cache.Get(pageName)
+					if found && !force {
+						app.SwitchToPage(pageName)
+					} else {
+						app.Node(nodeID, url)
+					}
+				}
+			}
+		}
+	}()
+}
+
+// Nodes fetches and displays the list of Kafka nodes.
+func (app *App) Nodes() {
+	resultCh := make(chan *client.ClusterResult)
+	errorCh := make(chan error)
+
+	c := app.GetCurrentKafkaClient()
+	SendStatusInfinite("getting nodes...")
+	c.DescribeCluster(resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		for {
+			select {
+			case description := <-resultCh:
+				nodes := description.Nodes
+				app.QueueUpdateDraw(func() {
+					pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Nodes)
+					table := app.NewNodesTable(nodes)
+					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
+						table.SetTitle(table.GetTitle() + "[" + label + "]")
+					}
+					table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+						if event.Key() == tcell.KeyCtrlU {
+							Publish(NodesChannel, GetNodesEventType, Payload{nil, true})
+						}
+						if event.Key() == tcell.KeyCtrlG {
+							app.EnterAutoUpdateMode(pageKey, func() {
+								Publish(
+									NodesChannel,
+									GetNodesEventType,
+									Payload{nil, true},
+								)
+							})
+							return nil
+						}
+
+						if IsKey(event, 'd') {
+							row, _ := table.GetSelection()
+							nodeID := table.GetCell(row, 0).Text
+							url := table.GetCell(row, 1).Text
+							Publish(NodesChannel, GetNodeEventType,
+								Payload{Data: NodeIDURLPair{nodeID, url}, Force: false})
+						}
+
+						return event
+					})
+
+					app.AddToPagesRegistry(pageKey, table, NodesPageMenu, false)
+					ClearStatus()
+				})
+				cancel()
+				return
+			case err := <-errorCh:
+				log.Error().Err(err).Msg("failed to describe cluster")
+				SendStatusWithDefaultTTL(
+					fmt.Sprintf("[red]failed to describe cluster: %s", err.Error()),
+				)
+				cancel()
+				return
+			case <-ctx.Done():
+				log.Error().Msg("timeout while describing cluster")
+				SendStatusWithDefaultTTL("[red]timeout while describing cluster")
+				return
+			}
+		}
+	}()
+}
+
+// Node fetches and displays details for a specific Kafka node.
+func (app *App) Node(id, url string) {
+	resultCh := make(chan *client.ResourceResult)
+	errorCh := make(chan error)
+
+	c := app.GetCurrentKafkaClient()
+	SendStatusInfinite("getting node description")
+	c.DescribeNode(id, resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		for {
+			select {
+			case description := <-resultCh:
+				app.QueueUpdateDraw(func() {
+					pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Node, id)
+					title := util.BuildTitle(Node, url, id)
+					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
+						title = title + "[" + label + "]"
+					}
+					desc := app.NewDescription(title)
+					desc.SetText(description.String())
+					desc.SetInputCapture(
+						app.WithHScroll(desc, func(event *tcell.EventKey) *tcell.EventKey {
+							if event.Key() == tcell.KeyCtrlU {
+								Publish(
+									NodesChannel,
+									GetNodeEventType,
+									Payload{NodeIDURLPair{id, url}, true},
+								)
+							}
+							if event.Key() == tcell.KeyCtrlG {
+								app.EnterAutoUpdateMode(pageKey, func() {
+									Publish(
+										NodesChannel,
+										GetNodeEventType,
+										Payload{NodeIDURLPair{id, url}, true},
+									)
+								})
+								return nil
+							}
+							return event
+						}),
+					)
+					app.AddToPagesRegistry(pageKey, desc, NodeDecriptionPageMenu, false)
+					ClearStatus()
+				})
+				cancel()
+				return
+			case err := <-errorCh:
+				log.Error().Err(err).Msg("failed to describe node")
+				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to describe node: %s", err.Error()))
+				cancel()
+				return
+			case <-ctx.Done():
+				log.Error().Msg("timeout while describing node")
+				SendStatusWithDefaultTTL("[red]timeout while describing node")
+				return
+			}
+		}
+	}()
+}
+
+// addNodesTableHeader adds a fixed header row (row 0) with label-coloured cells.
+func addNodesTableHeader(table *tview.Table, labelColor tcell.Color) {
+	mkHeader := func(text string) *tview.TableCell {
+		return tview.NewTableCell(text).SetSelectable(false).SetTextColor(labelColor)
+	}
+	table.SetCell(0, 0, mkHeader("ID"))
+	table.SetCell(0, 1, mkHeader("Host"))
+}
+
+// NewNodesTable creates a table displaying Kafka nodes.
+func (app *App) NewNodesTable(nodes []kafka.Node) *tview.Table {
+	table := tview.NewTable()
+	table.SetSelectable(true, false).
+		SetBorder(true).
+		SetBorderPadding(0, 0, 1, 0)
+	table.SetSelectedStyle(
+		tcell.StyleDefault.Foreground(
+			tcell.GetColor(app.Colors.Karat.Selection.FgColor),
+		).Background(
+			tcell.GetColor(app.Colors.Karat.Selection.BgColor),
+		),
+	)
+	table.SetFixed(1, 0)
+
+	labelColor := tcell.GetColor(app.Colors.Karat.Label.FgColor)
+	addNodesTableHeader(table, labelColor)
+
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	for i, node := range nodes {
+		table.SetCell(i+1, 0, tview.NewTableCell(strconv.Itoa(node.ID)))
+		table.SetCell(i+1, 1, tview.NewTableCell(node.Host))
+	}
+	table.SetTitle(
+		util.BuildTitle(Nodes,
+			"["+strconv.Itoa(len(nodes))+"]",
+		),
+	)
+	return table
+}

@@ -1,0 +1,259 @@
+// Copyright (c) Sergey Petrovsky
+// This source code is licensed under the MIT license found in the
+// LICENSE file in the root directory of this source tree.
+
+package ui
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+	"github.com/rs/zerolog/log"
+
+	"github.com/uraniumdawn/karat/pkg/client"
+	"github.com/uraniumdawn/karat/pkg/config"
+	"github.com/uraniumdawn/karat/pkg/util"
+)
+
+const (
+	GetClustersEventType EventType = "clusters:get"
+	GetClusterEventType  EventType = "cluster:get"
+)
+
+var ClustersChannel = make(chan Event)
+
+func (app *App) RunClusterEventHandler(ctx context.Context, in chan Event) {
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				log.Debug().Msg("shutting down cluster event handler")
+				return
+			case event := <-in:
+				switch event.Type {
+				case GetClustersEventType:
+					app.QueueUpdateDraw(func() {
+						ct := app.NewClustersTable()
+						app.ClustersTableInputHandler(ct)
+						app.AddToPagesRegistry(Clusters, ct, ClustersPageMenu, false)
+					})
+				case GetClusterEventType:
+					pageName := util.BuildPageKey(app.Selected.Cluster.Name, "info")
+					force := event.Payload.Force
+					_, found := app.Cache.Get(pageName)
+					if found && !force {
+						app.SwitchToPage(pageName)
+					} else {
+						app.Cluster()
+					}
+				}
+			}
+		}
+	}()
+}
+
+func (app *App) Cluster() {
+	c := app.KafkaClients[app.Selected.Cluster.Name]
+	rCh := make(chan *client.ClusterResult)
+	errorCh := make(chan error)
+	SendStatusInfinite("getting cluster description")
+	c.DescribeCluster(rCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		for {
+			select {
+			case description := <-rCh:
+				app.QueueUpdateDraw(func() {
+					pageKey := util.BuildPageKey(app.Selected.Cluster.Name, "info")
+					title := util.BuildTitle(app.Selected.Cluster.Name, "info")
+					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
+						title = title + "[" + label + "]"
+					}
+					desc := app.NewDescription(title)
+					desc.SetText(description.String())
+					desc.SetInputCapture(
+						app.WithHScroll(desc, func(event *tcell.EventKey) *tcell.EventKey {
+							if event.Key() == tcell.KeyCtrlU {
+								Publish(
+									ClustersChannel,
+									GetClusterEventType,
+									Payload{nil, true},
+								)
+							}
+							if event.Key() == tcell.KeyCtrlG {
+								app.EnterAutoUpdateMode(pageKey, func() {
+									Publish(
+										ClustersChannel,
+										GetClusterEventType,
+										Payload{nil, true},
+									)
+								})
+								return nil
+							}
+							return event
+						}),
+					)
+
+					app.AddToPagesRegistry(pageKey, desc, ClustersPageMenu, false)
+					ClearStatus()
+				})
+				cancel()
+				return
+			case err := <-errorCh:
+				log.Error().Err(err).Send()
+				SendStatusWithDefaultTTL(
+					fmt.Sprintf("[red]failed to describe cluster: %s", err.Error()),
+				)
+				cancel()
+				return
+			case <-ctx.Done():
+				log.Error().Msg("timeout while describing cluster")
+				SendStatusWithDefaultTTL("[red]timeout while describing cluster")
+				return
+			}
+		}
+	}()
+}
+
+func addClustersTableHeader(table *tview.Table, labelColor tcell.Color) {
+	mkHeader := func(text string) *tview.TableCell {
+		return tview.NewTableCell(text).SetSelectable(false).SetTextColor(labelColor)
+	}
+	table.SetCell(0, 0, mkHeader("Name"))
+	table.SetCell(0, 1, mkHeader("Servers"))
+	table.SetCell(0, 2, mkHeader("Mode"))
+}
+
+func (app *App) NewClustersTable() *tview.Table {
+	table := tview.NewTable()
+	table.SetTitle(" Clusters ")
+	table.SetSelectable(true, false).
+		SetBorder(true).
+		SetBorderPadding(0, 0, 1, 0)
+	table.SetSelectedStyle(
+		tcell.StyleDefault.Foreground(
+			tcell.GetColor(app.Colors.Karat.Selection.FgColor),
+		).Background(
+			tcell.GetColor(app.Colors.Karat.Selection.BgColor),
+		),
+	)
+	table.SetFixed(1, 0)
+
+	labelColor := tcell.GetColor(app.Colors.Karat.Label.FgColor)
+	addClustersTableHeader(table, labelColor)
+
+	// Iterate over the config slice to preserve order from config file
+	row := 1
+	for _, cluster := range app.Config.Karat.Clusters {
+		modeText := cluster.Mode
+		if modeText == "" {
+			modeText = "regular"
+		}
+		table.
+			SetCell(row, 0, tview.NewTableCell(cluster.Name)).
+			SetCell(row, 1, tview.NewTableCell(cluster.Properties["bootstrap.servers"])).
+			SetCell(row, 2, tview.NewTableCell(modeText))
+		row++
+	}
+	return table
+}
+
+func (app *App) ClustersTableInputHandler(ct *tview.Table) {
+	ct.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		row, _ := ct.GetSelection()
+		clusterName := ct.GetCell(row, 0).Text
+		cluster := app.Clusters[clusterName]
+
+		if event.Key() == tcell.KeyEnter {
+			app.SelectCluster(cluster, true)
+			ClearStatus()
+		}
+
+		if IsKey(event, 'd') {
+			if !app.isClusterSelected(app.Selected) || app.Selected.Cluster.Name != clusterName {
+				SendStatusWithDefaultTTL("[red]to perform operation, select cluster")
+				return event
+			}
+			Publish(ClustersChannel, GetClusterEventType, Payload{Force: true})
+		}
+
+		if event.Key() == tcell.KeyTab {
+			if cluster == nil {
+				return event
+			}
+			if cluster.Mode == "read-only" {
+				cluster.Mode = ""
+			} else {
+				cluster.Mode = "read-only"
+			}
+			modeText := cluster.Mode
+			if modeText == "" {
+				modeText = "regular"
+			}
+			ct.GetCell(row, 2).SetText(modeText)
+			if app.isClusterSelected(app.Selected) && app.Selected.Cluster.Name == clusterName {
+				app.Layout.SetSelected(
+					app.Selected.Cluster,
+					app.Selected.SchemaRegistry,
+					app.Selected.Connect,
+				)
+			}
+			if err := app.Config.Save(); err != nil {
+				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to save config: %s", err.Error()))
+			}
+			return nil
+		}
+
+		if event.Key() == tcell.KeyF12 {
+			app.ClusterConfigModal()
+			app.ShowModalPage(ClusterConfig)
+			return nil
+		}
+
+		return event
+	})
+}
+
+// ClusterConfigModal shows the raw contents of the user's config.yaml file.
+func (app *App) ClusterConfigModal() {
+	configPath, err := config.GetConfigPath()
+	var content string
+	if err != nil {
+		content = fmt.Sprintf("[red]error resolving config path: %s", err.Error())
+	} else {
+		data, readErr := os.ReadFile(configPath)
+		if readErr != nil {
+			content = fmt.Sprintf("[red]error reading config: %s", readErr.Error())
+		} else {
+			content = string(data)
+		}
+	}
+
+	view := tview.NewTextView().
+		SetDynamicColors(true).
+		SetText(content).
+		SetScrollable(true)
+	view.SetBorder(false).SetBorderPadding(0, 0, 1, 1)
+
+	view.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEsc || event.Key() == tcell.KeyF12 {
+			app.HideModalPage(ClusterConfig)
+			return nil
+		}
+		if IsKey(event, ':') {
+			return nil
+		}
+		return event
+	})
+
+	mainFlex := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(view, 0, 1, true)
+	mainFlex.SetTitle(" Cluster Config ")
+	mainFlex.SetBorder(true)
+
+	app.Layout.PagesRegistry.UI.Pages.AddPage(ClusterConfig, mainFlex, true, false)
+}

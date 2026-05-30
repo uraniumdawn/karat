@@ -1,0 +1,75 @@
+version: 2
+
+project_name: karat
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: karat-macos
+    main: .
+    binary: karat
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - id: karat-archive
+    builds:
+      - karat-macos
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}arm64
+      {{- else }}{{ .Arch }}{{ end }}
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^style:'
+      - Merge pull request
+      - Merge branch
+
+brews:
+  - name: karat
+    repository:
+      owner: uraniumdawn
+      name: homebrew-karat
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    commit_author:
+      name: uraniumdawn
+      email: sirozhaua@gmail.com
+    homepage: https://github.com/uraniumdawn/karat
+    description: "Terminal UI for Apache Kafka"
+    license: MIT
+    dependencies:
+      - name: librdkafka
+    install: |
+      bin.install "karat"
+    test: |
+      system "#{bin}/karat", "--version"
+
