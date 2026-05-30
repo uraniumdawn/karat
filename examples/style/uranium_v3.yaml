@@ -20,8 +20,7 @@ karat:
     bgColor: "#272727"
   selection:
     fgColor: "#272727"
-    # bgColor: "#ebdbb2"
-    bgColor: "grey"
+    bgColor: "#ebdbb2"
   title: "orange"
   border: "#ebdbb2"
   background: "#272727"
