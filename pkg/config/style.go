@@ -50,14 +50,8 @@ type ColorConfig struct {
 }
 
 func loadDefaultColorConfig() (*ColorConfig, error) {
-	data, err := os.ReadFile("default_style.yaml")
-	if err != nil {
-		log.Error().Err(err).Msg("error reading default style.yaml")
-		return nil, err
-	}
-
 	defaultConfig := &ColorConfig{}
-	if err := yaml.Unmarshal(data, defaultConfig); err != nil {
+	if err := yaml.Unmarshal(defaultStyleData, defaultConfig); err != nil {
 		log.Error().Err(err).Msg("error unmarshalling default style.yaml")
 		return nil, err
 	}

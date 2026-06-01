@@ -746,6 +746,64 @@ func (client *Client) BatchResetConsumerGroupOffsets(
 	}()
 }
 
+// CopyConsumerGroupOffsets copies committed offsets from sourceGroup to targetGroup,
+// implicitly creating targetGroup if it does not exist.
+func (client *Client) CopyConsumerGroupOffsets(
+	sourceGroup, targetGroup string,
+	resultChan chan<- bool,
+	errorChan chan<- error,
+) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), client.Timeout)
+		defer cancel()
+
+		listResult, err := client.ListConsumerGroupOffsets(
+			ctx,
+			[]kafka.ConsumerGroupTopicPartitions{{Group: sourceGroup}},
+		)
+		if err != nil {
+			errorChan <- fmt.Errorf("failed to list consumer group offsets: %w", err)
+			return
+		}
+
+		var allOffsets []kafka.TopicPartition
+		for _, tps := range listResult.ConsumerGroupsTopicPartitions {
+			allOffsets = append(allOffsets, tps.Partitions...)
+		}
+
+		if len(allOffsets) == 0 {
+			errorChan <- fmt.Errorf("no committed offsets found for group %s", sourceGroup)
+			return
+		}
+
+		alterResult, err := client.AlterConsumerGroupOffsets(
+			ctx,
+			[]kafka.ConsumerGroupTopicPartitions{
+				{Group: targetGroup, Partitions: allOffsets},
+			},
+			kafka.SetAdminRequestTimeout(client.Timeout),
+		)
+		if err != nil {
+			errorChan <- fmt.Errorf("failed to copy consumer group offsets: %w", err)
+			return
+		}
+
+		for _, result := range alterResult.ConsumerGroupsTopicPartitions {
+			for _, tp := range result.Partitions {
+				if tp.Error != nil {
+					errorChan <- fmt.Errorf(
+						"failed to copy offset for %s[%d]: %s",
+						*tp.Topic, tp.Partition, tp.Error,
+					)
+					return
+				}
+			}
+		}
+
+		resultChan <- true
+	}()
+}
+
 // ConsumerGroupsByTopic returns consumer groups that have committed offsets for the given topic.
 // It fetches topic metadata to discover partitions, then batch-queries all group offsets
 // for those partitions and filters groups with at least one valid committed offset.

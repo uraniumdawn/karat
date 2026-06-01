@@ -48,6 +48,7 @@ const (
 	DeleteConsumerGroup    = "Delete Consumer Group"
 	EditTopic              = "Edit Topic"
 	ResetOffset            = "Reset Offset"
+	CopyConsumerGroup      = "Copy Consumer Group"
 	ConnectorConfigConfirm = "Connector Config Confirm"
 	ConnectorActions       = "Connector Actions"
 	TaskActions            = "Task Actions"
