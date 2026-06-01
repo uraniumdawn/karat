@@ -463,6 +463,18 @@ func (app *App) ConsumerGroup(name string) {
 								)
 							}
 
+							if event.Key() == tcell.KeyCtrlE {
+								if app.IsCurrentClusterReadOnly() {
+									SendStatusWithDefaultTTL(
+										"[red]cluster is in read-only mode",
+									)
+									return event
+								}
+								app.CopyConsumerGroupModal(name)
+								app.ShowModalPage(CopyConsumerGroup)
+								return nil
+							}
+
 							return event
 						}),
 					)
@@ -515,7 +527,11 @@ func (app *App) ResetConsumerGroupOffsetModal(
 		return strategy == "to-timestamp" || strategy == "to-offset"
 	}
 
-	table, valueInputs, valueColumnFlex, container := app.newOffsetBatchTable(allTopics, labelColor, selectedStyle)
+	table, valueInputs, valueColumnFlex, container := app.newOffsetBatchTable(
+		allTopics,
+		labelColor,
+		selectedStyle,
+	)
 
 	// innerPages hosts the batch table as the base layer and the strategy picker as an overlay.
 	innerPages := tview.NewPages()
@@ -1178,6 +1194,104 @@ func (app *App) ResetConsumerGroupOffsetBatchResultHandler(
 			case <-ctx.Done():
 				log.Error().Msg("timeout while resetting consumer group offsets")
 				SendStatusWithDefaultTTL("[red]timeout while resetting consumer group offsets")
+				return
+			}
+		}
+	}()
+}
+
+// CopyConsumerGroupModal creates and registers the "copy consumer group" modal.
+// A single input field accepts the target group name; Ctrl+Enter submits, Enter unfocuses, Esc closes.
+func (app *App) CopyConsumerGroupModal(groupName string) {
+	foregroundColor := tcell.GetColor(app.Colors.Karat.Foreground)
+	backgroundColor := tcell.GetColor(app.Colors.Karat.Background)
+
+	input := tview.NewInputField().
+		SetFieldWidth(0).
+		SetPlaceholder("new consumer group name").
+		SetFieldStyle(tcell.StyleDefault.Foreground(foregroundColor).Background(backgroundColor)).
+		SetPlaceholderStyle(tcell.StyleDefault.Background(backgroundColor)).
+		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder))
+
+	mainFlex := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(input, 1, 0, true)
+	mainFlex.SetTitle(fmt.Sprintf(" Copy: %s ", groupName))
+	mainFlex.SetBorder(true)
+	mainFlex.SetBorderPadding(0, 0, 1, 0)
+
+	submit := func() {
+		targetGroup := strings.TrimSpace(input.GetText())
+		if targetGroup == "" {
+			SendStatusWithDefaultTTL("[red]group name cannot be empty")
+			return
+		}
+		app.HideModalPage(CopyConsumerGroup)
+		app.CopyConsumerGroupOffsetsBatchResultHandler(groupName, targetGroup)
+	}
+
+	input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch {
+		case IsCtrlEnter(event):
+			submit()
+			return nil
+		case event.Key() == tcell.KeyEnter:
+			app.SetFocus(mainFlex)
+			return nil
+		case event.Key() == tcell.KeyEsc:
+			app.HideModalPage(CopyConsumerGroup)
+			return nil
+		}
+		return event
+	})
+
+	mainFlex.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch {
+		case IsCtrlEnter(event):
+			submit()
+			return nil
+		case event.Key() == tcell.KeyEnter:
+			app.SetFocus(input)
+			return nil
+		case event.Key() == tcell.KeyEsc:
+			app.HideModalPage(CopyConsumerGroup)
+			return nil
+		}
+		return event
+	})
+
+	// height: 1 border top + 1 content row + 1 border bottom = 3
+	modal := util.NewResourceModal(mainFlex, 3)
+	app.Layout.PagesRegistry.UI.Pages.AddPage(CopyConsumerGroup, modal, true, false)
+}
+
+// CopyConsumerGroupOffsetsBatchResultHandler copies committed offsets from sourceGroup to
+// targetGroup and shows the result status.
+func (app *App) CopyConsumerGroupOffsetsBatchResultHandler(sourceGroup, targetGroup string) {
+	resultCh := make(chan bool)
+	errorCh := make(chan error)
+
+	c := app.GetCurrentKafkaClient()
+	SendStatusInfinite(fmt.Sprintf("copying offsets to '%s'", targetGroup))
+	c.CopyConsumerGroupOffsets(sourceGroup, targetGroup, resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		for {
+			select {
+			case <-resultCh:
+				SendStatus(fmt.Sprintf("offsets copied to '%s'", targetGroup), 2*time.Second, false)
+				cancel()
+				return
+			case err := <-errorCh:
+				log.Error().Err(err).Msg("failed to copy consumer group offsets")
+				SendStatusWithDefaultTTL(
+					fmt.Sprintf("[red]failed to copy offsets: %s", err.Error()),
+				)
+				cancel()
+				return
+			case <-ctx.Done():
+				log.Error().Msg("timeout while copying consumer group offsets")
+				SendStatusWithDefaultTTL("[red]timeout while copying consumer group offsets")
 				return
 			}
 		}

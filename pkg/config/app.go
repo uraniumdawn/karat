@@ -94,8 +94,8 @@ func (c *ConnectConfig) IsReadOnly() bool {
 	return c.Mode == "read-only"
 }
 
-// LoadAppConfig loads the application configuration by merging default_config.yaml
-// (from the working directory) with the user config file. User values take precedence.
+// LoadAppConfig loads the application configuration by merging built-in defaults
+// with the user config file. User values take precedence.
 func LoadAppConfig() (*Config, error) {
 	defaults, err := loadDefaultAppConfig()
 	if err != nil {
@@ -146,13 +146,8 @@ func validateAPIConfig(cfg *ApiConfig, def ApiConfig) {
 }
 
 func loadDefaultAppConfig() (*Config, error) {
-	data, err := os.ReadFile("default_config.yaml")
-	if err != nil {
-		log.Fatal().Err(err).Msg("error reading default_config.yaml")
-		return nil, err
-	}
 	cfg := &Config{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	if err := yaml.Unmarshal(defaultConfigData, cfg); err != nil {
 		log.Fatal().Err(err).Msg("error unmarshalling default_config.yaml")
 		return nil, err
 	}

@@ -208,10 +208,10 @@ sasl.password: ${KAFKA_PASSWORD}
 - Only one cluster, one schema registry, and one Kafka Connect instance should have `selected: true`
 - Selection is persisted when changed via UI
 
-**Default configuration (`default_config.yaml`):**
-- Karat ships a `default_config.yaml` in its working directory that provides baseline values for the `api` section
+**Default configuration:**
+- Karat has built-in defaults for the `api` section (embedded in the binary)
 - Your `config.yaml` is merged on top — only the values you specify override the defaults
-- Mirrors the same pattern as `default_style.yaml`
+- Mirrors the same pattern as the built-in style defaults
 
 **API settings (`api:`):**
 - `timeout` — timeout in seconds for all Kafka Admin API calls (cluster describe, topic operations, consumer group queries). Default: 30
@@ -232,7 +232,7 @@ karat:
     ...
 ```
 
-The style file is merged on top of `default_style.yaml`, so you only need to override the fields you want to change. Colors can be specified as tcell color names (`"white"`, `"grey"`) or RGB hex values (`"#1E1E1E"`). Use `"default"` to inherit your terminal's background or foreground color.
+The style file is merged on top of the built-in defaults, so you only need to override the fields you want to change. Colors can be specified as tcell color names (`"white"`, `"grey"`) or RGB hex values (`"#1E1E1E"`). Use `"default"` to inherit your terminal's background or foreground color.
 
 **Ready-made themes** — see [`examples/style/README.md`](examples/style/README.md) for previews and usage.
 

@@ -117,6 +117,10 @@ var keys = map[string]Pair{
 		Key:   "<o>",
 		Value: "Reset Offsets",
 	},
+	"copy_cgroup": {
+		Key:   "<Ctrl+e>",
+		Value: "Copy to...",
+	},
 	"confirm": {
 		Key:   "<Ctrl+Enter>",
 		Value: "Confirm",
@@ -265,6 +269,7 @@ const (
 	EditTopicPageMenu                   = "EditTopicPageMenu"
 	EditTopicInputMenu                  = "EditTopicInputMenu"
 	ResetOffsetPageMenu                 = "ResetOffsetPageMenu"
+	CopyConsumerGroupPageMenu           = "CopyConsumerGroupPageMenu"
 	ConsumerGroupsPageMenu              = "ConsumerGroupsPageMenu"
 	SubjectsPageMenu                    = "SubjectsPageMenu"
 	VersionsPageMenu                    = "VersionsPageMenu"
@@ -451,11 +456,16 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 			ConsumerGroupDescribePageMenu: {
 				"res",
 				"reset_offset",
+				"copy_cgroup",
 				"hlscroll",
 				"opened",
 				"upd",
 				"auto_upd",
 				"b/f",
+			},
+			CopyConsumerGroupPageMenu: {
+				"submit_ctrl",
+				"close",
 			},
 			SubjectsPageMenu: {
 				"sel",
