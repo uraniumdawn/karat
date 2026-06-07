@@ -43,6 +43,25 @@ checksum:
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
+changelog:
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Maintenance
+      regexp: '^.*?(chore|ci|docs|refactor|test)(\(.+\))??!?:.+$'
+      order: 2
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - '^Merge pull request'
+      - '^Merge branch'
+
 brews:
   - name: karat
     repository:
