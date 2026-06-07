@@ -94,8 +94,9 @@ func (app *App) RunStatusLineHandler(ctx context.Context, in chan Status) {
 									spinnerActive = false
 									app.Layout.StatusLine.SetText("")
 									app.Layout.StatusHint.SetText(
-										" κεράτιον v" + Version + " ",
+										app.versionHintText(),
 									)
+									app.resizeStatusHint()
 								})
 							})
 						}
@@ -103,7 +104,8 @@ func (app *App) RunStatusLineHandler(ctx context.Context, in chan Status) {
 						currentStatus = ""
 						spinnerActive = false
 						app.Layout.StatusLine.SetText("")
-						app.Layout.StatusHint.SetText(" κεράτιον v" + Version + " ")
+						app.Layout.StatusHint.SetText(app.versionHintText())
+						app.resizeStatusHint()
 						if statusLineTimer != nil {
 							statusLineTimer.Stop()
 						}

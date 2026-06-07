@@ -891,7 +891,7 @@ func (app *App) ConnectorActionsModal(connectorName, state string) {
 	case "RUNNING":
 		actions = []string{"PAUSE", "RESTART"}
 	case "PAUSED":
-		actions = []string{"RESUME", "RESTART"}
+		actions = []string{"RESUME"}
 	default:
 		actions = []string{"RESTART"}
 	}
