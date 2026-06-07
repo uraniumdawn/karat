@@ -25,18 +25,12 @@ jobs:
       - name: Install librdkafka
         run: brew install librdkafka
 
-      - name: Extract release notes
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md \
-            > /tmp/release_notes.md
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean --release-notes /tmp/release_notes.md
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
