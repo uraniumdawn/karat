@@ -43,17 +43,6 @@ checksum:
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
-changelog:
-  sort: asc
-  filters:
-    exclude:
-      - '^docs:'
-      - '^test:'
-      - '^chore:'
-      - '^style:'
-      - Merge pull request
-      - Merge branch
-
 brews:
   - name: karat
     repository:

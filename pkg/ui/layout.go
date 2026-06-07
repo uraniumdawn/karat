@@ -127,6 +127,7 @@ func NewLayout(registry *PagesRegistry, colors *config.ColorConfig, hasSchemaReg
 	hintWidth := len([]rune(hintText))
 
 	statusHint := tview.NewTextView()
+	statusHint.SetDynamicColors(true)
 	statusHint.SetText(hintText)
 	statusHint.SetTextAlign(tview.AlignRight)
 	statusHint.SetBackgroundColor(tcell.GetColor(colors.Karat.Status.BgColor))

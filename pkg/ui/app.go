@@ -83,6 +83,7 @@ type App struct {
 	autoUpdateMu         sync.Mutex
 	autoUpdateMode       bool
 	autoUpdatePageKey    string
+	LatestVersion        string
 }
 
 type Selected struct {
@@ -117,6 +118,36 @@ func (app *App) GetCurrentConnectClient() *connect.Client {
 		return nil
 	}
 	return app.ConnectClients[app.Selected.Connect.Name]
+}
+
+// versionHintText returns the StatusHint display text, including an update arrow when a newer version is known.
+func (app *App) versionHintText() string {
+	if app.LatestVersion != "" {
+		return fmt.Sprintf(" κεράτιον v%s [yellow]→ v%s[-] ", Version, app.LatestVersion)
+	}
+	return " κεράτιον v" + Version + " "
+}
+
+// versionHintDisplayWidth returns the visual width of the hint text (markup stripped).
+func (app *App) versionHintDisplayWidth() int {
+	if app.LatestVersion != "" {
+		return len([]rune(fmt.Sprintf(" κεράτιον v%s → v%s ", Version, app.LatestVersion)))
+	}
+	return len([]rune(" κεράτιον v" + Version + " "))
+}
+
+// resizeStatusHint updates the StatusBar item width to fit the current hint text.
+func (app *App) resizeStatusHint() {
+	app.Layout.StatusBar.ResizeItem(app.Layout.StatusHint, app.versionHintDisplayWidth(), 0)
+}
+
+// setVersionUpdate stores the latest version and updates the status hint in the UI.
+func (app *App) setVersionUpdate(latest string) {
+	app.LatestVersion = latest
+	app.QueueUpdateDraw(func() {
+		app.Layout.StatusHint.SetText(app.versionHintText())
+		app.resizeStatusHint()
+	})
 }
 
 func NewApp() *App {
@@ -201,6 +232,7 @@ func (app *App) Run() {
 	app.RunCgroupsEventHandler(ctx, CgroupsChannel)
 	app.RunSubjectsEventHandler(ctx, SubjectsChannel)
 	app.RunConnectorsEventHandler(ctx, ConnectorsChannel)
+	app.RunVersionChecker(ctx)
 
 	registry := NewPagesRegistry(app.Colors)
 	hasSR := len(app.Config.Karat.SchemaRegistries) > 0

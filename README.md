@@ -33,6 +33,7 @@ A powerful Terminal UI (TUI) for Apache Kafka that provides an intuitive, keyboa
 - **Inline Search & Filtering** - Fuzzy search across topics, consumer groups, subjects, and connectors
 - **Column Sorting** - Sort table views by any column with ascending/descending toggle
 - **In-Memory Cache** - 5-minute TTL cache per resource; force-refresh any view with `Ctrl+U`
+- **Update Notifications** - Checks GitHub for newer releases on startup and shows an update hint in the status bar
 
 
 ## Available Resources
