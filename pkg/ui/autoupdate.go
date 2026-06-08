@@ -11,9 +11,9 @@ import (
 
 var (
 	autoUpdateIntervals = []time.Duration{
-		0, 1 * time.Second, 3 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second,
+		0, 1 * time.Second, 5 * time.Second, 10 * time.Second, 30 * time.Second, 60 * time.Second,
 	}
-	autoUpdateLabels = []string{"", "1s", "3s", "5s", "10s", "20s"}
+	autoUpdateLabels = []string{"", "1s", "5s", "10s", "30s", "60s"}
 )
 
 type autoUpdateEntry struct {
@@ -66,7 +66,7 @@ func (app *App) ExitAutoUpdateMode() {
 }
 
 // CycleIntervalForCurrentPage advances the auto-update interval for the active page.
-// off → 1s → 3s → 5s → 10s → 20s → off. Transitioning to a non-zero interval triggers
+// off → 1s → 5s → 10s → 30s → 60s → off. Transitioning to a non-zero interval triggers
 // an immediate refresh before starting the ticker.
 func (app *App) CycleIntervalForCurrentPage() {
 	app.autoUpdateMu.Lock()
@@ -93,6 +93,7 @@ func (app *App) CycleIntervalForCurrentPage() {
 	fn := entry.refreshFn
 	app.autoUpdateMu.Unlock()
 
+	SendStatus("auto-update", 0, true)
 	fn()
 
 	go func() {

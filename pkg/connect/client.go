@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -244,14 +246,90 @@ func (c *Client) RestartConnector(name string, resultChan chan<- bool, errorChan
 	c.doConnectorAction(name, http.MethodPost, "restart?includeTasks=true", resultChan, errorChan)
 }
 
+// StopConnector stops a running connector.
+func (c *Client) StopConnector(name string, resultChan chan<- bool, errorChan chan<- error) {
+	c.doConnectorAction(name, http.MethodPut, "stop", resultChan, errorChan)
+}
+
 // DeleteConnector deletes a connector from the Kafka Connect cluster.
 func (c *Client) DeleteConnector(name string, resultChan chan<- bool, errorChan chan<- error) {
 	c.doConnectorAction(name, http.MethodDelete, "", resultChan, errorChan)
 }
 
+// DeleteConnectorOffsets resets all offsets for a stopped connector.
+func (c *Client) DeleteConnectorOffsets(name string, resultChan chan<- bool, errorChan chan<- error) {
+	c.doConnectorAction(name, http.MethodDelete, "offsets", resultChan, errorChan)
+}
+
+// SetConnectorOffsets applies the given partition offsets to a stopped connector
+// via PATCH /connectors/{name}/offsets.
+func (c *Client) SetConnectorOffsets(
+	name string,
+	offsets []ConnectorOffset,
+	resultChan chan<- bool,
+	errorChan chan<- error,
+) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), c.HTTPClient.Timeout)
+		defer cancel()
+
+		entries := make([]connectorOffsetEntry, 0, len(offsets))
+		for _, o := range offsets {
+			entries = append(entries, connectorOffsetEntry{Partition: o.Partition, Offset: o.RawOffset})
+		}
+
+		body, err := json.Marshal(connectorOffsetsRaw{Offsets: entries})
+		if err != nil {
+			errorChan <- fmt.Errorf("marshaling offsets: %w", err)
+			return
+		}
+
+		req, err := http.NewRequestWithContext(
+			ctx, http.MethodPatch,
+			c.BaseURL+"/connectors/"+name+"/offsets",
+			bytes.NewReader(body),
+		)
+		if err != nil {
+			errorChan <- fmt.Errorf("creating request: %w", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			errorChan <- fmt.Errorf("executing request: %w", err)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusCreated, http.StatusNoContent:
+			resultChan <- true
+		default:
+			respBody, _ := io.ReadAll(resp.Body)
+			errorChan <- fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(respBody))
+		}
+	}()
+}
+
 // RestartTask restarts a specific task of a connector.
 func (c *Client) RestartTask(name string, taskID int, resultChan chan<- bool, errorChan chan<- error) {
 	c.doConnectorAction(name, http.MethodPost, fmt.Sprintf("tasks/%d/restart", taskID), resultChan, errorChan)
+}
+
+// GetConnectorOffsets fetches the current partition offsets for a connector.
+func (c *Client) GetConnectorOffsets(name string, resultChan chan<- []ConnectorOffset, errorChan chan<- error) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), c.HTTPClient.Timeout)
+		defer cancel()
+
+		offsets, err := c.getConnectorOffsets(ctx, name)
+		if err != nil {
+			errorChan <- err
+			return
+		}
+		resultChan <- offsets
+	}()
 }
 
 func (c *Client) listConnectors(ctx context.Context) ([]string, error) {
@@ -357,6 +435,82 @@ func (c *Client) getConnectorConfig(ctx context.Context, name string) (map[strin
 	return response.Config, nil
 }
 
+func (c *Client) getConnectorOffsets(ctx context.Context, name string) ([]ConnectorOffset, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/connectors/"+name+"/offsets", nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("executing request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var raw connectorOffsetsRaw
+	decoder := json.NewDecoder(resp.Body)
+	decoder.UseNumber() // preserve large offsets in their original textual form, avoiding float64 scientific notation
+	if err := decoder.Decode(&raw); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	offsets := make([]ConnectorOffset, 0, len(raw.Offsets))
+	for _, entry := range raw.Offsets {
+		offsets = append(offsets, ConnectorOffset{
+			TopicPartition: formatOffsetKey(entry.Partition),
+			Offset:         formatOffsetValue(entry.Offset),
+			Partition:      entry.Partition,
+			RawOffset:      entry.Offset,
+		})
+	}
+
+	log.Debug().Str("connector", name).Int("count", len(offsets)).Msg("fetched connector offsets")
+	return offsets, nil
+}
+
+// formatOffsetKey renders a partition map as "topic:partition". Sink connectors
+// expose "kafka_topic"/"kafka_partition" keys; for source connectors, which use
+// connector-specific partition keys, it falls back to a sorted "key=value" join.
+func formatOffsetKey(partition map[string]any) string {
+	topic, hasTopic := partition["kafka_topic"]
+	part, hasPartition := partition["kafka_partition"]
+	if hasTopic && hasPartition {
+		return fmt.Sprintf("%v:%v", topic, part)
+	}
+	return joinSorted(partition)
+}
+
+// formatOffsetValue renders an offset map as a plain value. Sink connectors expose
+// a single "kafka_offset" key; source connectors may use custom offset keys, so it
+// falls back to a sorted "key=value" join.
+func formatOffsetValue(offset map[string]any) string {
+	if value, ok := offset["kafka_offset"]; ok && len(offset) == 1 {
+		return fmt.Sprintf("%v", value)
+	}
+	return joinSorted(offset)
+}
+
+func joinSorted(m map[string]any) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, m[k]))
+	}
+	return strings.Join(parts, ",")
+}
+
 // connectorStatusRaw matches the raw JSON response from /connectors/{name}/status.
 type connectorStatusRaw struct {
 	Name      string `json:"name"`
@@ -371,4 +525,16 @@ type connectorStatusRaw struct {
 		Trace    string `json:"trace"`
 	} `json:"tasks"`
 	Type string `json:"type"`
+}
+
+// connectorOffsetEntry represents a single partition/offset pair as exchanged with
+// the /connectors/{name}/offsets endpoint (both GET responses and PATCH requests).
+type connectorOffsetEntry struct {
+	Partition map[string]any `json:"partition"`
+	Offset    map[string]any `json:"offset"`
+}
+
+// connectorOffsetsRaw matches the raw JSON response from /connectors/{name}/offsets.
+type connectorOffsetsRaw struct {
+	Offsets []connectorOffsetEntry `json:"offsets"`
 }

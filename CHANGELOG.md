@@ -8,6 +8,28 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.2.4] - 2026-06-13
+
+## Features
+
+* **Transactions page**: browse cluster-wide Kafka transactions (transactional ID, producer ID, state, timeout, partitions), with sorting (`1`/`2`) and search (`/`). Requires franz-go connectivity for the cluster.
+* **ACLs page**: view cluster ACLs (principal, resource type/name, pattern type, operation, permission), with sorting and search. Requires franz-go connectivity for the cluster.
+* **Topic Producers**: view active producers and in-flight transactions for each partition of a topic, via the new "Extra Actions" modal.
+* **Extra Actions modal** (`>` on the Topics list and the Topic description page): consolidates secondary actions — "Consume", "CLI commands", and "Producers".
+* **Hide internal topics** (`i` on the Topics list): toggle hiding topics matching configurable regex patterns. Defaults (`^__.*`, `.*-changelog$`, `.*-repartition$`) can be overridden via `karat.ui.internal_topic_patterns` in the config file.
+* **Connector Offsets**: new `o` keybinding on the Connector description page opens an offsets view; `Ctrl+d` deletes the connector's offsets (connector must be stopped first), and `c` copies offsets to another connector.
+* Topic description page now shows the topic's actual on-disk size, aggregated across replicas.
+* Connector actions: added `STOP` for running connectors and `RESUME` for stopped connectors.
+
+## Enhancements
+
+* Auto-update keybinding changed from `Ctrl+g` to `g`, and removed from list pages (Topics, Consumer Groups, Subjects, Versions, Connectors, Connector Details) — still available on detail/description pages.
+* Auto-update intervals changed from 1s/3s/5s/10s/20s to 1s/5s/10s/30s/60s.
+* Consumer groups: "Copy to..." keybinding changed from `Ctrl+e` to `c`.
+* Connectors list loads faster — connector statuses are now fetched concurrently (up to 8 in parallel) instead of sequentially.
+
+---
+
 ## [0.2.3] - 2026-06-02
 
 ## Features
@@ -47,7 +69,8 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-[Unreleased]: https://github.com/uraniumdawn/karat/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/uraniumdawn/karat/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/uraniumdawn/karat/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/uraniumdawn/karat/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/uraniumdawn/karat/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/uraniumdawn/karat/compare/v0.2.0...v0.2.1

@@ -90,22 +90,9 @@ func (app *App) Nodes() {
 				app.QueueUpdateDraw(func() {
 					pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Nodes)
 					table := app.NewNodesTable(nodes)
-					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
-						table.SetTitle(table.GetTitle() + "[" + label + "]")
-					}
 					table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 						if event.Key() == tcell.KeyCtrlU {
 							Publish(NodesChannel, GetNodesEventType, Payload{nil, true})
-						}
-						if event.Key() == tcell.KeyCtrlG {
-							app.EnterAutoUpdateMode(pageKey, func() {
-								Publish(
-									NodesChannel,
-									GetNodesEventType,
-									Payload{nil, true},
-								)
-							})
-							return nil
 						}
 
 						if IsKey(event, 'd') {
@@ -157,9 +144,6 @@ func (app *App) Node(id, url string) {
 				app.QueueUpdateDraw(func() {
 					pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Node, id)
 					title := util.BuildTitle(Node, url, id)
-					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
-						title = title + "[" + label + "]"
-					}
 					desc := app.NewDescription(title)
 					desc.SetText(description.String())
 					desc.SetInputCapture(
@@ -170,16 +154,6 @@ func (app *App) Node(id, url string) {
 									GetNodeEventType,
 									Payload{NodeIDURLPair{id, url}, true},
 								)
-							}
-							if event.Key() == tcell.KeyCtrlG {
-								app.EnterAutoUpdateMode(pageKey, func() {
-									Publish(
-										NodesChannel,
-										GetNodeEventType,
-										Payload{NodeIDURLPair{id, url}, true},
-									)
-								})
-								return nil
 							}
 							return event
 						}),
@@ -205,11 +179,7 @@ func (app *App) Node(id, url string) {
 
 // addNodesTableHeader adds a fixed header row (row 0) with label-coloured cells.
 func addNodesTableHeader(table *tview.Table, labelColor tcell.Color) {
-	mkHeader := func(text string) *tview.TableCell {
-		return tview.NewTableCell(text).SetSelectable(false).SetTextColor(labelColor)
-	}
-	table.SetCell(0, 0, mkHeader("ID"))
-	table.SetCell(0, 1, mkHeader("Host"))
+	util.SetTableHeaders(table, labelColor, "ID", "Host")
 }
 
 // NewNodesTable creates a table displaying Kafka nodes.

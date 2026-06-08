@@ -12,9 +12,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -33,6 +35,8 @@ const (
 	GetConnectorEventType EventType = "connector:get"
 	// DeleteConnectorEventType is the event type for deleting a connector.
 	DeleteConnectorEventType EventType = "connector:delete"
+	// DeleteConnectorOffsetsEventType is the event type for deleting a connector's offsets.
+	DeleteConnectorOffsetsEventType EventType = "connector:offsets:delete"
 )
 
 // ConnectorsChannel is the channel for connector events.
@@ -79,6 +83,13 @@ func (app *App) RunConnectorsEventHandler(ctx context.Context, in chan Event) {
 						app.DeleteConnector(connectorName)
 						app.ShowModalPage(DeleteConnector)
 					})
+
+				case DeleteConnectorOffsetsEventType:
+					connectorName := event.Payload.Data.(string)
+					app.QueueUpdateDraw(func() {
+						app.DeleteConnectorOffsets(connectorName)
+						app.ShowModalPage(DeleteConnectorOffsets)
+					})
 				}
 			}
 		}
@@ -91,6 +102,7 @@ func (app *App) Connectors() {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentConnectClient()
+	pageKey := util.BuildPageKey(app.Selected.Connect.Name, Connectors)
 	SendStatusInfinite("getting connectors...")
 	c.ListConnectors(resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
@@ -100,7 +112,6 @@ func (app *App) Connectors() {
 			select {
 			case connectorNames := <-resultCh:
 				app.QueueUpdateDraw(func() {
-					pageKey := util.BuildPageKey(app.Selected.Connect.Name, Connectors)
 					statuses := app.fetchConnectorStatuses(c, connectorNames)
 
 					table := app.NewConnectorsTable(connectorNames, statuses)
@@ -122,17 +133,6 @@ func (app *App) Connectors() {
 								Payload{nil, true},
 							)
 						}
-						if event.Key() == tcell.KeyCtrlG {
-							app.EnterAutoUpdateMode(pageKey, func() {
-								Publish(
-									ConnectorsChannel,
-									GetConnectorsEventType,
-									Payload{nil, true},
-								)
-							})
-							return nil
-						}
-
 						if IsKey(event, 'd') {
 							row, _ := table.GetSelection()
 							connectorName := table.GetCell(row, 0).Text
@@ -271,20 +271,48 @@ func (app *App) Connectors() {
 	}()
 }
 
-// fetchConnectorStatuses retrieves status for each connector and returns a map keyed by name.
-func (app *App) fetchConnectorStatuses(c *connect.Client, names []string) map[string]*connect.ConnectorStatus {
-	statuses := make(map[string]*connect.ConnectorStatus)
-	for _, name := range names {
-		statusCh := make(chan *connect.ConnectorStatus)
-		errorCh := make(chan error)
-		c.GetConnectorStatus(name, statusCh, errorCh)
+// fetchConnectorStatusesMaxConcurrency caps the number of in-flight status
+// requests issued by fetchConnectorStatuses.
+const fetchConnectorStatusesMaxConcurrency = 8
 
-		select {
-		case status := <-statusCh:
-			statuses[name] = status
-		case err := <-errorCh:
-			log.Debug().Err(err).Str("connector", name).Msg("failed to get status")
-		}
+// fetchConnectorStatuses retrieves status for each connector and returns a map keyed by name.
+// Requests are fanned out concurrently, bounded by fetchConnectorStatusesMaxConcurrency.
+func (app *App) fetchConnectorStatuses(c *connect.Client, names []string) map[string]*connect.ConnectorStatus {
+	type result struct {
+		name   string
+		status *connect.ConnectorStatus
+	}
+
+	sem := make(chan struct{}, fetchConnectorStatusesMaxConcurrency)
+	resultsCh := make(chan result, len(names))
+	var wg sync.WaitGroup
+
+	for _, name := range names {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			statusCh := make(chan *connect.ConnectorStatus)
+			errorCh := make(chan error)
+			c.GetConnectorStatus(name, statusCh, errorCh)
+
+			select {
+			case status := <-statusCh:
+				resultsCh <- result{name, status}
+			case err := <-errorCh:
+				log.Debug().Err(err).Str("connector", name).Msg("failed to get status")
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(resultsCh)
+
+	statuses := make(map[string]*connect.ConnectorStatus, len(names))
+	for r := range resultsCh {
+		statuses[r.name] = r.status
 	}
 	return statuses
 }
@@ -295,6 +323,7 @@ func (app *App) ConnectorDetail(name string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentConnectClient()
+	pageKey := util.BuildPageKey(app.Selected.Connect.Name, Connectors, name)
 	SendStatusInfinite(fmt.Sprintf("getting connector '%s' details...", name))
 	c.DescribeConnector(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
@@ -304,7 +333,6 @@ func (app *App) ConnectorDetail(name string) {
 			select {
 			case detail := <-resultCh:
 				app.QueueUpdateDraw(func() {
-					pageKey := util.BuildPageKey(app.Selected.Connect.Name, Connectors, name)
 					title := util.BuildTitle(Connectors, name)
 					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
 						title = title + "[" + label + "]"
@@ -328,22 +356,23 @@ func (app *App) ConnectorDetail(name string) {
 									Payload{name, true},
 								)
 							}
-							if event.Key() == tcell.KeyCtrlG {
-								app.EnterAutoUpdateMode(pageKey, func() {
-									Publish(
-										ConnectorsChannel,
-										GetConnectorEventType,
-										Payload{name, true},
-									)
-								})
-								return nil
-							}
 							if IsKey(event, 'e') {
 								app.EditConnectorConfig(name)
 							}
 							if isRunning && !isReadOnly && IsKey(event, 'a') {
 								app.TaskActionsModal(detail)
 								app.ShowModalPage(TaskActions)
+							}
+							if IsKey(event, 'o') {
+								currentPage, _ := app.Layout.PagesRegistry.UI.Pages.GetFrontPage()
+								if currentPage == ConnectorOffsets {
+									app.HideModalPage(ConnectorOffsets)
+								} else {
+									app.ConnectorOffsetsModal(
+										name,
+										detail.Status.Connector.State,
+									)
+								}
 							}
 							return event
 						}),
@@ -372,13 +401,7 @@ func (app *App) ConnectorDetail(name string) {
 
 // addConnectorsTableHeader adds a fixed header row (row 0) with label-coloured cells.
 func addConnectorsTableHeader(table *tview.Table, labelColor tcell.Color) {
-	mkHeader := func(text string) *tview.TableCell {
-		return tview.NewTableCell(text).SetSelectable(false).SetTextColor(labelColor)
-	}
-	table.SetCell(0, 0, mkHeader("Name"))
-	table.SetCell(0, 1, mkHeader("State"))
-	table.SetCell(0, 2, mkHeader("Type"))
-	table.SetCell(0, 3, mkHeader("Tasks"))
+	util.SetTableHeaders(table, labelColor, "Name", "State", "Type", "Tasks")
 }
 
 // sortConnectorsTable rebuilds the table sorted by col (0=Name, 1=State, 2=Type).
@@ -766,10 +789,6 @@ func (app *App) TaskActionsModal(detail *connect.ConnectorDetail) {
 
 	for i, task := range tasks {
 		stateColor := tcell.GetColor(app.Colors.Karat.Foreground)
-		switch strings.ToUpper(task.State) {
-		case "RUNNING":
-		case "FAILED":
-		}
 		taskTable.SetCell(i+1, 0, tview.NewTableCell(strconv.Itoa(task.ID)))
 		taskTable.SetCell(i+1, 1, tview.NewTableCell(task.State).SetTextColor(stateColor))
 		taskTable.SetCell(i+1, 2, tview.NewTableCell(task.WorkerID))
@@ -834,6 +853,112 @@ func (app *App) TaskActionsModal(detail *connect.ConnectorDetail) {
 	app.Layout.PagesRegistry.UI.Pages.AddPage(TaskActions, modal, true, false)
 }
 
+// ConnectorOffsetsModal fetches and displays a modal table of a connector's
+// current partition offsets (topic:partition -> current offset). state is the
+// connector's current state (e.g. "RUNNING", "STOPPED"), used to gate offset deletion.
+func (app *App) ConnectorOffsetsModal(name, state string) {
+	app.fetchConnectorOffsets(name, func(offsets []connect.ConnectorOffset) {
+		app.buildConnectorOffsetsModal(name, state, offsets)
+	})
+}
+
+// fetchConnectorOffsets retrieves a connector's current offsets asynchronously and
+// invokes onSuccess on the UI goroutine with the result. An empty result, an error,
+// or a timeout is reported via the status bar instead of calling onSuccess.
+func (app *App) fetchConnectorOffsets(name string, onSuccess func([]connect.ConnectorOffset)) {
+	resultCh := make(chan []connect.ConnectorOffset)
+	errorCh := make(chan error)
+
+	c := app.GetCurrentConnectClient()
+	SendStatusInfinite(fmt.Sprintf("getting connector '%s' offsets...", name))
+	c.GetConnectorOffsets(name, resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		for {
+			select {
+			case offsets := <-resultCh:
+				if len(offsets) == 0 {
+					ClearStatus()
+					SendStatusWithDefaultTTL("[yellow]no offsets found for this connector")
+					cancel()
+					return
+				}
+				app.QueueUpdateDraw(func() {
+					onSuccess(offsets)
+					ClearStatus()
+				})
+				cancel()
+				return
+			case err := <-errorCh:
+				log.Error().Err(err).Msg("failed to get connector offsets")
+				SendStatusWithDefaultTTL(
+					fmt.Sprintf("[red]failed to get connector offsets: %s", err.Error()),
+				)
+				cancel()
+				return
+			case <-ctx.Done():
+				log.Error().Msg("timeout while getting connector offsets")
+				SendStatusWithDefaultTTL("[red]timeout while getting connector offsets")
+				return
+			}
+		}
+	}()
+}
+
+// buildConnectorOffsetsModal builds and shows the connector offsets modal.
+func (app *App) buildConnectorOffsetsModal(name, state string, offsets []connect.ConnectorOffset) {
+	desc := app.NewDescription(fmt.Sprintf(" Offsets: %s ", name))
+	desc.SetText(connect.FormatConnectorOffsets(offsets))
+	desc.SetInputCapture(
+		app.WithHScroll(desc, func(event *tcell.EventKey) *tcell.EventKey {
+			if event.Key() == tcell.KeyEsc || IsKey(event, 'o') {
+				app.HideModalPage(ConnectorOffsets)
+				return nil
+			}
+			if event.Key() == tcell.KeyCtrlU {
+				app.fetchConnectorOffsets(name, func(fresh []connect.ConnectorOffset) {
+					offsets = fresh
+					desc.SetText(connect.FormatConnectorOffsets(fresh))
+				})
+				return nil
+			}
+			if event.Key() == tcell.KeyCtrlD {
+				if app.IsCurrentConnectReadOnly() {
+					SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+					return event
+				}
+				if !strings.EqualFold(state, "STOPPED") {
+					SendStatusWithDefaultTTL("[red]connector must be stopped to delete its offsets")
+					return event
+				}
+				Publish(ConnectorsChannel, DeleteConnectorOffsetsEventType, Payload{name, false})
+				return nil
+			}
+			if IsKey(event, 'c') {
+				if app.IsCurrentConnectReadOnly() {
+					SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+					return event
+				}
+				app.CopyConnectorOffsetsModal(name, offsets)
+				app.ShowModalPage(CopyConnectorOffsets)
+				return nil
+			}
+			return event
+		}),
+	)
+
+	_, _, _, screenHeight := app.Layout.Content.GetRect()
+	if screenHeight == 0 {
+		screenHeight = 40 // default fallback
+	}
+	modalHeight := screenHeight / 2
+
+	modal := util.NewResourceModal(desc, modalHeight)
+	app.Layout.PagesRegistry.UI.Pages.AddPage(ConnectorOffsets, modal, true, false)
+	app.ShowModalPage(ConnectorOffsets)
+}
+
 // ExecuteTaskAction restarts a specific connector task.
 func (app *App) ExecuteTaskAction(connectorName string, taskID int, action string) {
 	action = strings.ToLower(action)
@@ -889,8 +1014,10 @@ func (app *App) ConnectorActionsModal(connectorName, state string) {
 	var actions []string
 	switch strings.ToUpper(state) {
 	case "RUNNING":
-		actions = []string{"PAUSE", "RESTART"}
+		actions = []string{"PAUSE", "STOP", "RESTART"}
 	case "PAUSED":
+		actions = []string{"RESUME"}
+	case "STOPPED":
 		actions = []string{"RESUME"}
 	default:
 		actions = []string{"RESTART"}
@@ -961,15 +1088,31 @@ func (app *App) ConnectorActionsModal(connectorName, state string) {
 	app.Layout.PagesRegistry.UI.Pages.AddPage(ConnectorActions, modal, true, false)
 }
 
-// ExecuteConnectorAction executes a connector action (pause, resume, restart).
+// connectorActionVerbForms maps a connector action to its present participle and
+// past tense forms for status messages (plain string concatenation mangles English
+// spelling rules, e.g. "pause"+"ing" -> "pauseing").
+var connectorActionVerbForms = map[string]struct{ ing, ed string }{
+	"pause":   {"pausing", "paused"},
+	"resume":  {"resuming", "resumed"},
+	"restart": {"restarting", "restarted"},
+	"stop":    {"stopping", "stopped"},
+}
+
+// ExecuteConnectorAction executes a connector action (pause, resume, restart, stop).
 func (app *App) ExecuteConnectorAction(name, action string) {
 	action = strings.ToLower(action)
+	forms, ok := connectorActionVerbForms[action]
+	if !ok {
+		log.Error().Str("action", action).Msg("unsupported connector action")
+		SendStatusWithDefaultTTL(fmt.Sprintf("[red]unsupported connector action: %s", action))
+		return
+	}
 
 	resultCh := make(chan bool)
 	errorCh := make(chan error)
 
 	c := app.GetCurrentConnectClient()
-	SendStatusInfinite(fmt.Sprintf("%sing connector...", action))
+	SendStatusInfinite(fmt.Sprintf("%s connector...", forms.ing))
 
 	switch action {
 	case "pause":
@@ -978,6 +1121,8 @@ func (app *App) ExecuteConnectorAction(name, action string) {
 		c.ResumeConnector(name, resultCh, errorCh)
 	case "restart":
 		c.RestartConnector(name, resultCh, errorCh)
+	case "stop":
+		c.StopConnector(name, resultCh, errorCh)
 	}
 
 	// UI timeout is slightly longer than the HTTP client timeout so that an
@@ -990,7 +1135,7 @@ func (app *App) ExecuteConnectorAction(name, action string) {
 			select {
 			case <-resultCh:
 				SendStatus(
-					fmt.Sprintf("connector '%s' %sed", name, action),
+					fmt.Sprintf("connector '%s' %s", name, forms.ed),
 					2*time.Second,
 					false,
 				)
@@ -1005,9 +1150,9 @@ func (app *App) ExecuteConnectorAction(name, action string) {
 				cancel()
 				return
 			case <-ctx.Done():
-				log.Error().Msgf("timeout while %sing connector", action)
+				log.Error().Msgf("timeout while %s connector", forms.ing)
 				SendStatusWithDefaultTTL(
-					fmt.Sprintf("[red]timeout while %sing connector", action),
+					fmt.Sprintf("[red]timeout while %s connector", forms.ing),
 				)
 				return
 			}
@@ -1082,4 +1227,198 @@ func (app *App) DeleteConnectorResultHandler(name string) {
 			}
 		}
 	}()
+}
+
+// DeleteConnectorOffsets shows a confirmation modal for resetting a connector's offsets.
+func (app *App) DeleteConnectorOffsets(connectorName string) {
+	messageText := tview.NewTextView().
+		SetText(fmt.Sprintf("Offsets for connector [red::b]%s[-::-] will be deleted. Confirm?", connectorName)).
+		SetTextAlign(tview.AlignCenter).
+		SetDynamicColors(true)
+
+	messageText.SetBorder(true).
+		SetTitle(" Confirm Deletion ").
+		SetBorderPadding(0, 0, 1, 1)
+
+	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if IsCtrlEnter(event) {
+			app.DeleteConnectorOffsetsResultHandler(connectorName)
+			app.HideModalPage(DeleteConnectorOffsets)
+		}
+
+		if event.Key() == tcell.KeyEsc {
+			app.HideModalPage(DeleteConnectorOffsets)
+		}
+
+		return event
+	})
+
+	modal := util.NewConfirmationModal(messageText)
+	app.Layout.PagesRegistry.UI.Pages.AddPage(DeleteConnectorOffsets, modal, true, true)
+	app.Layout.Menu.SetMenu(DeleteConnectorOffsetsPageMenu)
+	app.Layout.PagesRegistry.UI.Pages.ShowPage(DeleteConnectorOffsets)
+}
+
+// DeleteConnectorOffsetsResultHandler performs the connector offsets reset.
+func (app *App) DeleteConnectorOffsetsResultHandler(name string) {
+	resultCh := make(chan bool)
+	errorCh := make(chan error)
+
+	c := app.GetCurrentConnectClient()
+	SendStatusInfinite("deleting connector offsets")
+	c.DeleteConnectorOffsets(name, resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		for {
+			select {
+			case <-resultCh:
+				SendStatus(
+					fmt.Sprintf("offsets for connector '%s' have been deleted", name),
+					2*time.Second,
+					false,
+				)
+				app.QueueUpdateDraw(func() {
+					app.HideModalPage(ConnectorOffsets)
+				})
+				Publish(ConnectorsChannel, GetConnectorEventType, Payload{name, true})
+				cancel()
+				return
+			case err := <-errorCh:
+				log.Error().Err(err).Msg("failed to delete connector offsets")
+				SendStatusWithDefaultTTL(
+					fmt.Sprintf("[red]failed to delete connector offsets: %s", err.Error()),
+				)
+				cancel()
+				return
+			case <-ctx.Done():
+				log.Error().Msg("timeout while deleting connector offsets")
+				SendStatusWithDefaultTTL("[red]timeout while deleting connector offsets")
+				return
+			}
+		}
+	}()
+}
+
+// CopyConnectorOffsetsModal creates and registers the "copy connector offsets" modal.
+// A single input field accepts the target connector name; Ctrl+Enter submits, Enter
+// unfocuses, Esc closes.
+func (app *App) CopyConnectorOffsetsModal(connectorName string, offsets []connect.ConnectorOffset) {
+	foregroundColor := tcell.GetColor(app.Colors.Karat.Foreground)
+	backgroundColor := tcell.GetColor(app.Colors.Karat.Background)
+
+	input := tview.NewInputField().
+		SetFieldWidth(0).
+		SetPlaceholder("target connector name").
+		SetFieldStyle(tcell.StyleDefault.Foreground(foregroundColor).Background(backgroundColor)).
+		SetPlaceholderStyle(tcell.StyleDefault.Background(backgroundColor)).
+		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder))
+
+	mainFlex := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(input, 1, 0, true)
+	mainFlex.SetTitle(fmt.Sprintf(" Copy Offsets: %s ", connectorName))
+	mainFlex.SetBorder(true)
+	mainFlex.SetBorderPadding(0, 0, 1, 0)
+
+	submit := func() {
+		targetConnector := strings.TrimSpace(input.GetText())
+		if targetConnector == "" {
+			SendStatusWithDefaultTTL("[red]connector name cannot be empty")
+			return
+		}
+		if targetConnector == connectorName {
+			SendStatusWithDefaultTTL("[red]target connector must be different")
+			return
+		}
+		app.HideModalPage(CopyConnectorOffsets)
+		app.CopyConnectorOffsetsResultHandler(targetConnector, offsets)
+	}
+
+	input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch {
+		case IsCtrlEnter(event):
+			submit()
+			return nil
+		case event.Key() == tcell.KeyEnter:
+			app.SetFocus(mainFlex)
+			return nil
+		case event.Key() == tcell.KeyEsc:
+			app.HideModalPage(CopyConnectorOffsets)
+			return nil
+		}
+		return event
+	})
+
+	mainFlex.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch {
+		case IsCtrlEnter(event):
+			submit()
+			return nil
+		case event.Key() == tcell.KeyEnter:
+			app.SetFocus(input)
+			return nil
+		case event.Key() == tcell.KeyEsc:
+			app.HideModalPage(CopyConnectorOffsets)
+			return nil
+		}
+		return event
+	})
+
+	// height: 1 border top + 1 content row + 1 border bottom = 3
+	modal := util.NewResourceModal(mainFlex, 3)
+	app.Layout.PagesRegistry.UI.Pages.AddPage(CopyConnectorOffsets, modal, true, false)
+}
+
+// CopyConnectorOffsetsResultHandler verifies that the target connector exists, then
+// applies the source connector's offsets to it and shows the result status.
+func (app *App) CopyConnectorOffsetsResultHandler(targetName string, offsets []connect.ConnectorOffset) {
+	c := app.GetCurrentConnectClient()
+
+	namesCh := make(chan []string)
+	errorCh := make(chan error)
+	SendStatusInfinite(fmt.Sprintf("checking connector '%s'...", targetName))
+	c.ListConnectors(namesCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		defer cancel()
+		select {
+		case names := <-namesCh:
+			if !slices.Contains(names, targetName) {
+				SendStatusWithDefaultTTL(fmt.Sprintf("[red]connector '%s' does not exist", targetName))
+				return
+			}
+			app.setConnectorOffsets(c, targetName, offsets)
+		case err := <-errorCh:
+			log.Error().Err(err).Msg("failed to list connectors")
+			SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to list connectors: %s", err.Error()))
+		case <-ctx.Done():
+			log.Error().Msg("timeout while listing connectors")
+			SendStatusWithDefaultTTL("[red]timeout while listing connectors")
+		}
+	}()
+}
+
+// setConnectorOffsets applies offsets to the target connector and shows the result status.
+func (app *App) setConnectorOffsets(c *connect.Client, targetName string, offsets []connect.ConnectorOffset) {
+	resultCh := make(chan bool)
+	errorCh := make(chan error)
+
+	SendStatusInfinite(fmt.Sprintf("copying offsets to '%s'", targetName))
+	c.SetConnectorOffsets(targetName, offsets, resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+	defer cancel()
+
+	select {
+	case <-resultCh:
+		SendStatus(fmt.Sprintf("offsets copied to '%s'", targetName), 2*time.Second, false)
+	case err := <-errorCh:
+		log.Error().Err(err).Msg("failed to copy connector offsets")
+		SendStatusWithDefaultTTL(
+			fmt.Sprintf("[red]failed to copy connector offsets: %s", err.Error()),
+		)
+	case <-ctx.Done():
+		log.Error().Msg("timeout while copying connector offsets")
+		SendStatusWithDefaultTTL("[red]timeout while copying connector offsets")
+	}
 }

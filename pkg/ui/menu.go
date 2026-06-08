@@ -1,3 +1,7 @@
+// Copyright (c) Sergey Petrovsky
+// This source code is licensed under the MIT license found in the
+// LICENSE file in the root directory of this source tree.
+
 package ui
 
 import (
@@ -8,6 +12,7 @@ import (
 	"github.com/uraniumdawn/karat/pkg/config"
 )
 
+// Menu renders the bottom keybinding bar for the currently active page.
 type Menu struct {
 	Content *tview.Table
 	Flex    *tview.Flex
@@ -15,6 +20,7 @@ type Menu struct {
 	Colors  *config.ColorConfig
 }
 
+// Pair holds a keybinding's display key and description.
 type Pair struct {
 	Key   string
 	Value string
@@ -22,8 +28,12 @@ type Pair struct {
 
 var keys = map[string]Pair{
 	"sel": {
-		Key:   "<j/↓, k,↑>",
+		Key:   "<j/↓,k/↑>",
 		Value: "Selection",
+	},
+	"hjkl": {
+		Key:   "<hjkl>",
+		Value: "Move",
 	},
 	"forward": {
 		Key:   "<l>",
@@ -70,8 +80,12 @@ var keys = map[string]Pair{
 		Value: "Update",
 	},
 	"auto_upd": {
-		Key:   "<Ctrl+g>",
+		Key:   "<g>",
 		Value: "Auto-update mode",
+	},
+	"extra_actions": {
+		Key:   "<>>",
+		Value: "Extra",
 	},
 	"auto_upd_tab": {
 		Key:   "<Tab>",
@@ -97,6 +111,10 @@ var keys = map[string]Pair{
 		Key:   "<Ctrl+d>",
 		Value: "Delete Topic",
 	},
+	"toggle_internal": {
+		Key:   "<i>",
+		Value: "Hide Internal",
+	},
 	"delete_cg": {
 		Key:   "<Ctrl+d>",
 		Value: "Delete Group",
@@ -104,6 +122,14 @@ var keys = map[string]Pair{
 	"delete_conn": {
 		Key:   "<Ctrl+d>",
 		Value: "Delete Connector",
+	},
+	"delete_offsets": {
+		Key:   "<Ctrl+d>",
+		Value: "Delete Offsets",
+	},
+	"copy_offsets": {
+		Key:   "<c>",
+		Value: "Copy Offsets",
 	},
 	"edit_topic": {
 		Key:   "<e>",
@@ -118,7 +144,7 @@ var keys = map[string]Pair{
 		Value: "Reset Offsets",
 	},
 	"copy_cgroup": {
-		Key:   "<Ctrl+e>",
+		Key:   "<c>",
 		Value: "Copy to...",
 	},
 	"confirm": {
@@ -153,6 +179,10 @@ var keys = map[string]Pair{
 		Key:   "<a>",
 		Value: "Task Actions",
 	},
+	"offsets": {
+		Key:   "<o>",
+		Value: "Offsets",
+	},
 	"cancel": {
 		Key:   "<Esc>",
 		Value: "Cancel",
@@ -160,10 +190,6 @@ var keys = map[string]Pair{
 	"cli_commands": {
 		Key:   "<t>",
 		Value: "CLI commands",
-	},
-	"consume": {
-		Key:   "<r>",
-		Value: "Consume",
 	},
 	"consume_help": {
 		Key:   "<F1>",
@@ -255,6 +281,8 @@ var keys = map[string]Pair{
 	},
 }
 
+// Page menu identifiers, used as keys into the map passed to NewMenu to look up
+// the keybindings shown for the currently active page.
 const (
 	ResourcesPageMenu                   = "ResourcesPageMenu"
 	OpenedPagesMenu                     = "OpenedPagesMenu"
@@ -270,22 +298,30 @@ const (
 	EditTopicInputMenu                  = "EditTopicInputMenu"
 	ResetOffsetPageMenu                 = "ResetOffsetPageMenu"
 	CopyConsumerGroupPageMenu           = "CopyConsumerGroupPageMenu"
+	CopyConnectorOffsetsPageMenu        = "CopyConnectorOffsetsPageMenu"
 	ConsumerGroupsPageMenu              = "ConsumerGroupsPageMenu"
 	SubjectsPageMenu                    = "SubjectsPageMenu"
 	VersionsPageMenu                    = "VersionsPageMenu"
 	ConsumerGroupDescribePageMenu       = "ConsumerGroupDescribePageMenu"
+	TransactionsPageMenu                = "TransactionsPageMenu"
+	TransactionDescribePageMenu         = "TransactionDescribePageMenu"
+	ACLsPageMenu                        = "ACLsPageMenu"
 	TopicDecriptionPageMenu             = "TopicDescriptionPageMenu"
+	TopicProducersPageMenu              = "TopicProducersPageMenu"
+	ExtraActionsPageMenu                = "ExtraActionsPageMenu"
 	SubjectDecriptionPageMenu           = "SubjectDescriptionPageMenu"
 	NodeDecriptionPageMenu              = "NodeDescriptionPageMenu"
 	ConnectorDescriptionPageMenu        = "ConnectorDescriptionPageMenu"
 	ConnectorDescriptionPageMenuRunning = "ConnectorDescriptionPageMenuRunning"
 	TaskActionsPageMenu                 = "TaskActionsPageMenu"
+	ConnectorOffsetsPageMenu            = "ConnectorOffsetsPageMenu"
 	CliTemplatesPageMenu                = "CliTemplatesPageMenu"
 	CliExecutePageMenu                  = "CliExecutePageMenu"
 	ConnectorsPageMenu                  = "ConnectorsPageMenu"
 	ConnectorConfigEditPageMenu         = "ConnectorConfigEditPageMenu"
 	ConnectorActionsPageMenu            = "ConnectorActionsPageMenu"
 	DeleteConnectorPageMenu             = "DeleteConnectorPageMenu"
+	DeleteConnectorOffsetsPageMenu      = "DeleteConnectorOffsetsPageMenu"
 	ConnectPageMenu                     = "ConnectPageMenu"
 	FindByPageMenu                      = "FindByPageMenu"
 	ConsumeOutputPageMenu               = "ConsumeOutputPageMenu"
@@ -296,6 +332,8 @@ const (
 	AutoUpdateModePageMenu              = "AutoUpdateModePageMenu"
 )
 
+// NewMenu builds the keybinding bar, pre-rendering the keybinding rows for every
+// PageMenu defined in its internal map.
 func NewMenu(colors *config.ColorConfig) *Menu {
 	table := tview.NewTable().
 		SetSelectable(false, false)
@@ -366,7 +404,6 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"dsc",
 				"config_help",
 				"upd",
-				"auto_upd",
 				"opened",
 				"forward",
 			},
@@ -391,7 +428,6 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"res",
 				"dsc",
 				"upd",
-				"auto_upd",
 				"opened",
 				"b/f",
 			},
@@ -400,14 +436,13 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"res",
 				"dsc",
 				"sort_2",
+				"toggle_internal",
 				"create",
-				"consume",
 				"delete_t",
 				"edit_topic",
-				"cli_commands",
+				"extra_actions",
 				"search",
 				"upd",
-				"auto_upd",
 				"opened",
 				"b/f",
 			},
@@ -449,7 +484,6 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"find",
 				"search",
 				"upd",
-				"auto_upd",
 				"opened",
 				"b/f",
 			},
@@ -467,6 +501,33 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"submit_ctrl",
 				"close",
 			},
+			TransactionsPageMenu: {
+				"sel",
+				"res",
+				"dsc",
+				"sort_2",
+				"search",
+				"upd",
+				"opened",
+				"b/f",
+			},
+			TransactionDescribePageMenu: {
+				"res",
+				"hlscroll",
+				"opened",
+				"upd",
+				"auto_upd",
+				"b/f",
+			},
+			ACLsPageMenu: {
+				"sel",
+				"res",
+				"sort_2",
+				"search",
+				"upd",
+				"opened",
+				"b/f",
+			},
 			SubjectsPageMenu: {
 				"sel",
 				"select",
@@ -474,7 +535,6 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"search",
 				"opened",
 				"upd",
-				"auto_upd",
 				"b/f",
 			},
 			VersionsPageMenu: {
@@ -483,7 +543,6 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"dsc",
 				"opened",
 				"upd",
-				"auto_upd",
 				"b/f",
 			},
 			ConnectorsPageMenu: {
@@ -497,27 +556,33 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"search",
 				"opened",
 				"upd",
-				"auto_upd",
 				"b/f",
 			},
 			ConnectorDescriptionPageMenu: {
 				"res",
 				"edit",
+				"offsets",
 				"hlscroll",
 				"opened",
 				"upd",
-				"auto_upd",
 				"b/f",
 			},
 			ConnectorDescriptionPageMenuRunning: {
 				"res",
 				"task_actions",
 				"edit",
+				"offsets",
 				"hlscroll",
 				"opened",
 				"upd",
-				"auto_upd",
 				"b/f",
+			},
+			ConnectorOffsetsPageMenu: {
+				"hjkl",
+				"upd",
+				"delete_offsets",
+				"copy_offsets",
+				"close",
 			},
 			TaskActionsPageMenu: {
 				"sel",
@@ -538,7 +603,29 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"confirm",
 				"cancel",
 			},
+			DeleteConnectorOffsetsPageMenu: {
+				"confirm",
+				"cancel",
+			},
+			CopyConnectorOffsetsPageMenu: {
+				"submit_ctrl",
+				"close",
+			},
 			TopicDecriptionPageMenu: {
+				"res",
+				"hlscroll",
+				"opened",
+				"upd",
+				"auto_upd",
+				"extra_actions",
+				"b/f",
+			},
+			ExtraActionsPageMenu: {
+				"sel",
+				"select",
+				"close",
+			},
+			TopicProducersPageMenu: {
 				"res",
 				"hlscroll",
 				"opened",
@@ -551,7 +638,6 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"hlscroll",
 				"opened",
 				"upd",
-				"auto_upd",
 				"b/f",
 			},
 			NodeDecriptionPageMenu: {
@@ -559,7 +645,6 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"hlscroll",
 				"opened",
 				"upd",
-				"auto_upd",
 				"b/f",
 			},
 			FindByPageMenu: {
@@ -572,6 +657,7 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 	}
 }
 
+// SetMenu redraws the keybinding bar with the entries registered for the given PageMenu.
 func (m *Menu) SetMenu(menu string) {
 	m.Content.Clear()
 	if keyBindings, ok := (*m.Map)[menu]; ok {

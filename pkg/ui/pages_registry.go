@@ -127,7 +127,10 @@ func (pr *PagesRegistry) SetupPageMenus() {
 	pr.PageMenuMap[CopyConsumerGroup] = CopyConsumerGroupPageMenu
 	pr.PageMenuMap[ConnectorActions] = ConnectorActionsPageMenu
 	pr.PageMenuMap[TaskActions] = TaskActionsPageMenu
+	pr.PageMenuMap[ConnectorOffsets] = ConnectorOffsetsPageMenu
 	pr.PageMenuMap[DeleteConnector] = DeleteConnectorPageMenu
+	pr.PageMenuMap[DeleteConnectorOffsets] = DeleteConnectorOffsetsPageMenu
+	pr.PageMenuMap[CopyConnectorOffsets] = CopyConnectorOffsetsPageMenu
 	pr.PageMenuMap[CliTemplates] = CliTemplatesPageMenu
 	pr.PageMenuMap[FindBy] = FindByPageMenu
 	pr.PageMenuMap[ConsumeOutput] = ConsumeOutputPageMenu

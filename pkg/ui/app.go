@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/uraniumdawn/karat/pkg/client"
 	"github.com/uraniumdawn/karat/pkg/config"
 	"github.com/uraniumdawn/karat/pkg/connect"
+	"github.com/uraniumdawn/karat/pkg/franz"
 	"github.com/uraniumdawn/karat/pkg/schemaregistry"
 	"github.com/uraniumdawn/karat/pkg/util"
 )
@@ -31,14 +33,19 @@ var Version = ""
 
 const (
 	Resources              = "Resources"
+	ExtraActions           = "Extra Actions"
 	Clusters               = "Clusters"
 	SchemaRegistries       = "Schema-registries"
 	Topics                 = "Topics"
 	Topic                  = "Topic"
+	Producers              = "Producers"
 	Nodes                  = "Nodes"
 	Node                   = "Node"
 	ConsumerGroups         = "Consumer groups"
 	ConsumerGroup          = "Consumer group"
+	Transactions           = "Transactions"
+	Transaction            = "Transaction"
+	ACLs                   = "ACLs"
 	Subjects               = "Subjects"
 	Connectors             = "Connectors"
 	Connect                = "Connect"
@@ -52,7 +59,10 @@ const (
 	ConnectorConfigConfirm = "Connector Config Confirm"
 	ConnectorActions       = "Connector Actions"
 	TaskActions            = "Task Actions"
+	ConnectorOffsets       = "Connector Offsets"
 	DeleteConnector        = "Delete Connector"
+	DeleteConnectorOffsets = "Delete Connector Offsets"
+	CopyConnectorOffsets   = "Copy Connector Offsets"
 	CliTemplates           = "CLI Templates"
 	FindBy                 = "Find By"
 	ConsumeOutput          = "Consume Output"
@@ -70,20 +80,22 @@ type App struct {
 	SchemaRegistries      map[string]*config.SchemaRegistryConfig
 	Connects              map[string]*config.ConnectConfig
 	KafkaClients          map[string]*client.Client
+	FranzClients          map[string]*franz.Client
 	SchemaRegistryClients map[string]*schemaregistry.Client
 	ConnectClients        map[string]*connect.Client
 	Selected              Selected
 	Config                *config.Config
 	Colors                *config.ColorConfig
-	// ModalHideTimer        *time.Timer
-	CurrentFilters       map[string]string // pageName -> filter text for search preservation
-	cgroupPrevLag        map[string]map[string]int64
-	ResourcesSearchInput *tview.InputField
-	autoUpdate           map[string]*autoUpdateEntry
-	autoUpdateMu         sync.Mutex
-	autoUpdateMode       bool
-	autoUpdatePageKey    string
-	LatestVersion        string
+	CurrentFilters        map[string]string // pageName -> filter text for search preservation
+	HideInternalTopics    bool              // hide __*, *-changelog, *-repartition topics
+	InternalTopicPatterns []*regexp.Regexp  // extra user-defined patterns for internal topics
+	cgroupPrevLag         map[string]map[string]int64
+	ResourcesSearchInput  *tview.InputField
+	autoUpdate            map[string]*autoUpdateEntry
+	autoUpdateMu          sync.Mutex
+	autoUpdateMode        bool
+	autoUpdatePageKey     string
+	LatestVersion         string
 }
 
 type Selected struct {
@@ -94,6 +106,12 @@ type Selected struct {
 
 func (app *App) GetCurrentKafkaClient() *client.Client {
 	return app.KafkaClients[app.Selected.Cluster.Name]
+}
+
+// GetCurrentFranzClient returns the franz-go client for the selected cluster, or nil
+// if it could not be created (e.g. unsupported security configuration).
+func (app *App) GetCurrentFranzClient() *franz.Client {
+	return app.FranzClients[app.Selected.Cluster.Name]
 }
 
 // IsCurrentClusterReadOnly reports whether the selected cluster is in read-only mode.
@@ -143,8 +161,8 @@ func (app *App) resizeStatusHint() {
 
 // setVersionUpdate stores the latest version and updates the status hint in the UI.
 func (app *App) setVersionUpdate(latest string) {
-	app.LatestVersion = latest
 	app.QueueUpdateDraw(func() {
+		app.LatestVersion = latest
 		app.Layout.StatusHint.SetText(app.versionHintText())
 		app.resizeStatusHint()
 	})
@@ -170,6 +188,17 @@ func NewApp() *App {
 		fatal("failed to load style", err)
 	}
 
+	var internalTopicPatterns []*regexp.Regexp
+	for _, pattern := range cfg.Karat.UI.InternalTopicPatterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			log.Warn().Err(err).Str("pattern", pattern).
+				Msg("invalid internal_topic_patterns regex, skipping")
+			continue
+		}
+		internalTopicPatterns = append(internalTopicPatterns, re)
+	}
+
 	app := &App{
 		Application:           tview.NewApplication(),
 		Cache:                 cache.New(5*time.Minute, 10*time.Minute),
@@ -177,11 +206,13 @@ func NewApp() *App {
 		SchemaRegistries:      util.ToSchemaRegistryMap(cfg),
 		Connects:              util.ToConnectMap(cfg),
 		KafkaClients:          make(map[string]*client.Client),
+		FranzClients:          make(map[string]*franz.Client),
 		SchemaRegistryClients: make(map[string]*schemaregistry.Client),
 		ConnectClients:        make(map[string]*connect.Client),
 		Config:                cfg,
 		Colors:                colors,
 		CurrentFilters:        make(map[string]string),
+		InternalTopicPatterns: internalTopicPatterns,
 		cgroupPrevLag:         make(map[string]map[string]int64),
 		autoUpdate:            make(map[string]*autoUpdateEntry),
 	}
@@ -230,6 +261,8 @@ func (app *App) Run() {
 	app.RunNodesEventHandler(ctx, NodesChannel)
 	app.RunTopicsEventHandler(ctx, TopicsChannel)
 	app.RunCgroupsEventHandler(ctx, CgroupsChannel)
+	app.RunTransactionsEventHandler(ctx, TransactionsChannel)
+	app.RunACLsEventHandler(ctx, ACLsChannel)
 	app.RunSubjectsEventHandler(ctx, SubjectsChannel)
 	app.RunConnectorsEventHandler(ctx, ConnectorsChannel)
 	app.RunVersionChecker(ctx)
@@ -289,6 +322,11 @@ func (app *App) Run() {
 		log.Error().Err(err).Msg("failed application execution")
 	}
 	cancel()
+
+	for _, fc := range app.FranzClients {
+		fc.Close()
+	}
+
 	log.Info().Msg("application terminated")
 }
 
@@ -320,6 +358,16 @@ func (app *App) isConnectSelected(selected Selected) bool {
 	return selected.Connect != nil
 }
 
+// requireSelection sends msg as a status message and returns false if selected is false.
+// Callers use the return value to decide whether to abort the current operation.
+func (app *App) requireSelection(selected bool, msg string) bool {
+	if !selected {
+		SendStatusWithDefaultTTL(msg)
+		return false
+	}
+	return true
+}
+
 func (app *App) SelectCluster(cluster *config.ClusterConfig, save bool) {
 	app.StopAllAutoUpdates()
 	if save {
@@ -344,6 +392,16 @@ func (app *App) SelectCluster(cluster *config.ClusterConfig, save bool) {
 			os.Exit(1)
 		}
 		app.KafkaClients[cluster.Name] = newClient
+	}
+
+	if _, fcExists := app.FranzClients[cluster.Name]; !fcExists {
+		newFranzClient, err := franz.NewClient(cluster, app.Config.GetAPICallTimeout())
+		if err != nil {
+			log.Warn().Err(err).Str("cluster", cluster.Name).
+				Msg("failed to create franz-go client, topic size will be estimated")
+		} else {
+			app.FranzClients[cluster.Name] = newFranzClient
+		}
 	}
 }
 

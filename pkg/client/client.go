@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -48,11 +49,34 @@ type TopicResult struct {
 	Name string
 	kafka.DescribeTopicsResult
 	kafka.DescribeACLsResult
-	Config         []kafka.ConfigResourceResult
-	startOffsets   map[int32]kafka.Offset
-	endOffsets     map[int32]kafka.Offset
-	hourAgoOffsets map[int32]kafka.Offset
-	mx             sync.RWMutex
+	Config          []kafka.ConfigResourceResult
+	startOffsets    map[int32]kafka.Offset
+	endOffsets      map[int32]kafka.Offset
+	hourAgoOffsets  map[int32]kafka.Offset
+	actualSizeBytes *int64
+	sizeHint        string
+	mx              sync.RWMutex
+}
+
+// SetActualSize sets the topic's actual on-disk size in bytes, as reported by
+// DescribeLogDirs. When set, String() reports this instead of the heuristic estimate.
+// hint may be non-empty to flag a partial/inaccurate result (e.g. missing replicas).
+func (r *TopicResult) SetActualSize(bytes int64, hint string) {
+	r.mx.Lock()
+	defer r.mx.Unlock()
+	r.actualSizeBytes = &bytes
+	r.sizeHint = hint
+}
+
+// GetActualSize returns the topic's actual on-disk size in bytes and any hint set by
+// SetActualSize. ok is false if the actual size has not been set.
+func (r *TopicResult) GetActualSize() (bytes int64, hint string, ok bool) {
+	r.mx.RLock()
+	defer r.mx.RUnlock()
+	if r.actualSizeBytes == nil {
+		return 0, "", false
+	}
+	return *r.actualSizeBytes, r.sizeHint, true
 }
 
 // ConsumerGroupsResult contains the list of consumer groups.
@@ -90,6 +114,8 @@ type Client struct {
 	*kafka.AdminClient
 }
 
+// NewClient creates a new Client wrapping a confluent-kafka-go AdminClient configured
+// from the given cluster config, with the given API call timeout and max concurrency.
 func NewClient(config *config.ClusterConfig, timeout time.Duration, maxConcurrency int) (*Client, error) {
 	conf := &kafka.ConfigMap{}
 	for key, value := range config.Properties {
@@ -141,6 +167,7 @@ func (client *Client) DescribeCluster(resultChan chan<- *ClusterResult, errorCha
 	}()
 }
 
+// DescribeNode retrieves the broker configuration for the given broker ID.
 func (client *Client) DescribeNode(
 	brokerID string,
 	resultChan chan<- *ResourceResult,
@@ -178,6 +205,7 @@ func (client *Client) DescribeNode(
 	}()
 }
 
+// Topics retrieves metadata for all topics in the cluster.
 func (client *Client) Topics(resultChan chan<- *TopicsResult, errorChan chan<- error) {
 	go func() {
 		metadata, err := client.GetMetadata(nil, true, int(client.Timeout.Milliseconds()))
@@ -197,6 +225,7 @@ func (client *Client) Topics(resultChan chan<- *TopicsResult, errorChan chan<- e
 	}()
 }
 
+// ConsumerGroups retrieves a list of all consumer groups in the cluster.
 func (client *Client) ConsumerGroups(
 	resultChan chan<- *ConsumerGroupsResult,
 	errorChan chan<- error,
@@ -216,6 +245,8 @@ func (client *Client) ConsumerGroups(
 	}()
 }
 
+// CreateTopic creates a new topic with the given name, partition count, replication
+// factor, and topic-level config overrides.
 func (client *Client) CreateTopic(
 	name string,
 	numPartitions int,
@@ -256,6 +287,7 @@ func (client *Client) CreateTopic(
 	}()
 }
 
+// DeleteTopic deletes the topic with the given name.
 func (client *Client) DeleteTopic(
 	name string,
 	resultChan chan<- bool,
@@ -317,6 +349,7 @@ func (client *Client) DeleteConsumerGroup(
 	}()
 }
 
+// UpdateTopicConfig incrementally applies the given config overrides to the named topic.
 func (client *Client) UpdateTopicConfig(
 	name string,
 	config map[string]string,
@@ -369,6 +402,8 @@ func (client *Client) UpdateTopicConfig(
 	}()
 }
 
+// DescribeConsumerGroup retrieves a consumer group's description along with its
+// current offsets, log-end offsets, and per-partition lag.
 func (client *Client) DescribeConsumerGroup(
 	group string,
 	resultChan chan<- *DescribeConsumerGroupResult,
@@ -404,6 +439,8 @@ func (client *Client) DescribeConsumerGroup(
 	}()
 }
 
+// LogEndOffsets fetches the log-end offsets for the given topic partitions and stores
+// them on result.
 func (client *Client) LogEndOffsets(
 	ctx context.Context,
 	tps []TopicPartition,
@@ -458,6 +495,8 @@ func (client *Client) CurrentOffsets(
 	result.SetCurrentOffsets(r)
 }
 
+// SetLag computes per-partition consumer lag as the difference between end and
+// current offsets and stores the result.
 func (r *DescribeConsumerGroupResult) SetLag(
 	current map[TopicPartition]kafka.Offset,
 	end map[TopicPartition]kafka.Offset,
@@ -471,12 +510,14 @@ func (r *DescribeConsumerGroupResult) SetLag(
 	r.lag = consumerLag
 }
 
+// SetCurrentOffsets stores the consumer group's current committed offsets.
 func (r *DescribeConsumerGroupResult) SetCurrentOffsets(o map[TopicPartition]kafka.Offset) {
 	r.mx.Lock()
 	defer r.mx.Unlock()
 	r.currentOffsets = o
 }
 
+// SetEndOffsets stores the log-end offsets for the consumer group's partitions.
 func (r *DescribeConsumerGroupResult) SetEndOffsets(o map[TopicPartition]kafka.Offset) {
 	r.mx.Lock()
 	defer r.mx.Unlock()
@@ -529,12 +570,14 @@ func (r *DescribeConsumerGroupResult) GetTopicNames() []string {
 	return topics
 }
 
+// SetStartOffsets stores the per-partition start (earliest) offsets.
 func (r *TopicResult) SetStartOffsets(o map[int32]kafka.Offset) {
 	r.mx.Lock()
 	defer r.mx.Unlock()
 	r.startOffsets = o
 }
 
+// SetEndOffsets stores the per-partition end (latest) offsets.
 func (r *TopicResult) SetEndOffsets(o map[int32]kafka.Offset) {
 	r.mx.Lock()
 	defer r.mx.Unlock()
@@ -548,12 +591,14 @@ func (r *TopicResult) SetHourAgoOffsets(o map[int32]kafka.Offset) {
 	r.hourAgoOffsets = o
 }
 
+// SetTopicResultConfig stores the topic's resource configuration entries.
 func (r *TopicResult) SetTopicResultConfig(o []kafka.ConfigResourceResult) {
 	r.mx.Lock()
 	defer r.mx.Unlock()
 	r.Config = o
 }
 
+// SetTopicACLsResult stores the topic's ACL description result.
 func (r *TopicResult) SetTopicACLsResult(o kafka.DescribeACLsResult) {
 	r.mx.Lock()
 	defer r.mx.Unlock()
@@ -607,8 +652,8 @@ func (r *TopicResult) GetEstimatedSizeBytes() (int64, bool) {
 
 	for _, configResult := range r.Config {
 		if entry, ok := configResult.Config["segment.bytes"]; ok {
-			if val, err := fmt.Sscanf(entry.Value, "%d", &segmentBytes); err == nil && val == 1 {
-				// Successfully parsed segment.bytes
+			if parsed, err := strconv.ParseInt(entry.Value, 10, 64); err == nil {
+				segmentBytes = parsed
 				break
 			}
 		}
@@ -958,6 +1003,8 @@ func (client *Client) IncreasePartitions(
 	}()
 }
 
+// DescribeTopic retrieves a topic's description, configuration, ACLs, and start/end/
+// hour-ago offsets for all partitions.
 func (client *Client) DescribeTopic(
 	name string,
 	resultChan chan<- *TopicResult,
@@ -1053,6 +1100,7 @@ func (client *Client) DescribeTopic(
 	}()
 }
 
+// DescribeTopicConfig retrieves the resource configuration entries for the named topic.
 func (client *Client) DescribeTopicConfig(name string) (*[]kafka.ConfigResourceResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), client.Timeout)
 	defer cancel()

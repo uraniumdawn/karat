@@ -70,9 +70,6 @@ func (app *App) Cluster() {
 				app.QueueUpdateDraw(func() {
 					pageKey := util.BuildPageKey(app.Selected.Cluster.Name, "info")
 					title := util.BuildTitle(app.Selected.Cluster.Name, "info")
-					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
-						title = title + "[" + label + "]"
-					}
 					desc := app.NewDescription(title)
 					desc.SetText(description.String())
 					desc.SetInputCapture(
@@ -83,16 +80,6 @@ func (app *App) Cluster() {
 									GetClusterEventType,
 									Payload{nil, true},
 								)
-							}
-							if event.Key() == tcell.KeyCtrlG {
-								app.EnterAutoUpdateMode(pageKey, func() {
-									Publish(
-										ClustersChannel,
-										GetClusterEventType,
-										Payload{nil, true},
-									)
-								})
-								return nil
 							}
 							return event
 						}),
@@ -120,12 +107,7 @@ func (app *App) Cluster() {
 }
 
 func addClustersTableHeader(table *tview.Table, labelColor tcell.Color) {
-	mkHeader := func(text string) *tview.TableCell {
-		return tview.NewTableCell(text).SetSelectable(false).SetTextColor(labelColor)
-	}
-	table.SetCell(0, 0, mkHeader("Name"))
-	table.SetCell(0, 1, mkHeader("Servers"))
-	table.SetCell(0, 2, mkHeader("Mode"))
+	util.SetTableHeaders(table, labelColor, "Name", "Servers", "Mode")
 }
 
 func (app *App) NewClustersTable() *tview.Table {

@@ -39,17 +39,6 @@ func NewSchemaRegistryClient(config *config.SchemaRegistryConfig) (*Client, erro
 	return &Client{ClusterName: config.Name, Client: client}, nil
 }
 
-func (client *Client) DescribeSchemaRegistry(resultChan chan<- []string, errorChan chan<- error) {
-	go func() {
-		subjects, err := client.GetAllSubjects()
-		if err != nil {
-			errorChan <- err
-			return
-		}
-		resultChan <- subjects
-	}()
-}
-
 // Subjects retrieves all schema subjects from the Schema Registry.
 func (client *Client) Subjects(resultChan chan<- []string, errorChan chan<- error) {
 	go func() {

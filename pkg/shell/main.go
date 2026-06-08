@@ -76,28 +76,35 @@ func Execute(args []string, rc, e chan string, sig chan syscall.Signal, processD
 	}()
 
 	// Handle termination signals
+	done := make(chan struct{})
 	go func() {
-		for s := range sig {
-			signalOnce.Do(func() {
-				if cmd.Process == nil {
-					return
-				}
+		for {
+			select {
+			case s := <-sig:
+				signalOnce.Do(func() {
+					if cmd.Process == nil {
+						return
+					}
 
-				receivedSignal = s
-				err := cmd.Process.Signal(s)
-				if err != nil {
-					errMsg := s.String() + " failed: " + err.Error()
-					e <- errMsg
-					log.Error().Err(err).Str("signal", s.String()).Msg("signal failed")
-				} else {
-					log.Info().Str("signal", s.String()).Msg("signal sent to process")
-				}
-			})
+					receivedSignal = s
+					err := cmd.Process.Signal(s)
+					if err != nil {
+						errMsg := s.String() + " failed: " + err.Error()
+						e <- errMsg
+						log.Error().Err(err).Str("signal", s.String()).Msg("signal failed")
+					} else {
+						log.Info().Str("signal", s.String()).Msg("signal sent to process")
+					}
+				})
+			case <-done:
+				return
+			}
 		}
 	}()
 
 	waitErr := cmd.Wait()
 	wg.Wait()
+	close(done)
 
 	// Close output channels to signal that all output has been consumed
 	close(rc)

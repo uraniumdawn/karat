@@ -11,6 +11,8 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"github.com/rs/zerolog/log"
+
+	"github.com/uraniumdawn/karat/pkg/util"
 )
 
 const (
@@ -50,12 +52,7 @@ func (app *App) RunSchemaRegistriesEventHandler(ctx context.Context, in chan Eve
 
 // addSchemaRegistriesTableHeader adds a fixed header row (row 0) with label-coloured cells.
 func addSchemaRegistriesTableHeader(table *tview.Table, labelColor tcell.Color) {
-	mkHeader := func(text string) *tview.TableCell {
-		return tview.NewTableCell(text).SetSelectable(false).SetTextColor(labelColor)
-	}
-	table.SetCell(0, 0, mkHeader("Name"))
-	table.SetCell(0, 1, mkHeader("URL"))
-	table.SetCell(0, 2, mkHeader("Mode"))
+	util.SetTableHeaders(table, labelColor, "Name", "URL", "Mode")
 }
 
 // NewSchemaRegistriesTable creates a table displaying schema registries.

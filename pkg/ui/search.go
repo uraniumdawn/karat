@@ -11,45 +11,7 @@ import (
 	"github.com/uraniumdawn/karat/pkg/config"
 )
 
-const SearchPage = "Search"
-
-type Search struct {
-	Input *tview.InputField
-	Flex  *tview.Flex
-}
-
-// NewSearchModal creates a new search modal with the given color configuration.
-// Deprecated: use inline search instead.
-func NewSearchModal(colors *config.ColorConfig) *Search {
-	input := tview.NewInputField()
-	input.SetFieldBackgroundColor(tcell.GetColor(colors.Karat.Background))
-	input.SetBackgroundColor(tcell.GetColor(colors.Karat.Background))
-	input.SetBorder(true)
-	input.SetBorderColor(tcell.GetColor(colors.Karat.Border))
-	input.SetTitle(" Search ")
-	input.SetTitleAlign(tview.AlignLeft)
-	input.SetBorderPadding(0, 0, 1, 0)
-
-	flex := tview.NewFlex().
-		SetDirection(tview.FlexRow).
-		AddItem(nil, 0, 1, false).
-		AddItem(
-			tview.NewFlex().
-				SetDirection(tview.FlexColumn).
-				AddItem(nil, 0, 3, false).
-				AddItem(input, 0, 4, true).
-				AddItem(nil, 0, 3, false),
-			3, 0, true).
-		AddItem(nil, 0, 1, false)
-
-	flex.SetBackgroundColor(tcell.GetColor(colors.Karat.Background))
-
-	return &Search{
-		Input: input,
-		Flex:  flex,
-	}
-}
-
+// NewInlineSearch creates the inline search input field shown below the page header.
 func NewInlineSearch(colors *config.ColorConfig) *tview.InputField {
 	search := tview.NewInputField()
 	search.SetTitleAlign(tview.AlignLeft)

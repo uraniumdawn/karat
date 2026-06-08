@@ -6,6 +6,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -14,11 +15,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// JqConfig holds settings for piping output through jq.
 type JqConfig struct {
 	Enable  bool     `yaml:"enable,omitempty"`
 	Command []string `yaml:"command,omitempty"`
 }
 
+// Config is the root application configuration.
 type Config struct {
 	Karat struct {
 		Clusters         []*ClusterConfig        `yaml:"clusters"`
@@ -26,15 +29,26 @@ type Config struct {
 		CliTemplates     []string                `yaml:"cli_templates,omitempty"`
 		Connect          []*ConnectConfig        `yaml:"connect,omitempty"`
 		API              ApiConfig               `yaml:"api,omitempty"`
+		UI               UIConfig                `yaml:"ui,omitempty"`
 		Style            string                  `yaml:"style,omitempty"`
 	} `yaml:"karat"`
 }
 
+// ApiConfig holds settings controlling Kafka Admin API calls.
 type ApiConfig struct {
 	Timeout        int `yaml:"timeout"`
 	MaxConcurrency int `yaml:"max_concurrency,omitempty"`
 }
 
+// UIConfig holds settings controlling UI behavior.
+type UIConfig struct {
+	// InternalTopicPatterns are regular expressions matched against topic names to
+	// classify them as internal when hiding internal topics. Defaults are provided
+	// in default_config.yaml and can be overridden by the user's config.
+	InternalTopicPatterns []string `yaml:"internal_topic_patterns,omitempty"`
+}
+
+// ClusterConfig holds Kafka cluster connection properties.
 type ClusterConfig struct {
 	Name       string            `yaml:"name"`
 	Properties map[string]string `yaml:"properties"`
@@ -47,6 +61,7 @@ func (c *ClusterConfig) IsReadOnly() bool {
 	return c.Mode == "read-only"
 }
 
+// GetBootstrapServers returns the cluster's bootstrap.servers property, or "" if unset.
 func (c *ClusterConfig) GetBootstrapServers() string {
 	if bootstrap, ok := c.Properties["bootstrap.servers"]; ok {
 		return bootstrap
@@ -111,19 +126,16 @@ func LoadAppConfig() (*Config, error) {
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		log.Fatal().Err(err).Msg("error reading config file")
-		return nil, err
+		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
 
 	override := &Config{}
 	if err := yaml.Unmarshal([]byte(os.ExpandEnv(string(data))), override); err != nil {
-		log.Fatal().Err(err).Msg("error unmarshalling config")
-		return nil, err
+		return nil, fmt.Errorf("error unmarshalling config: %w", err)
 	}
 
 	if err := mergo.Merge(defaults, override, mergo.WithOverride); err != nil {
-		log.Fatal().Err(err).Msg("error merging config")
-		return nil, err
+		return nil, fmt.Errorf("error merging config: %w", err)
 	}
 
 	validateAPIConfig(&defaults.Karat.API, defAPI)
@@ -148,8 +160,7 @@ func validateAPIConfig(cfg *ApiConfig, def ApiConfig) {
 func loadDefaultAppConfig() (*Config, error) {
 	cfg := &Config{}
 	if err := yaml.Unmarshal(defaultConfigData, cfg); err != nil {
-		log.Fatal().Err(err).Msg("error unmarshalling default_config.yaml")
-		return nil, err
+		return nil, fmt.Errorf("error unmarshalling default_config.yaml: %w", err)
 	}
 	return cfg, nil
 }
