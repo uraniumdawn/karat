@@ -32,6 +32,10 @@ const (
 	ConnectorsResourceEventType EventType = "resources:connectors"
 	// ConnectResourceEventType is the event type for connect cluster resources.
 	ConnectResourceEventType EventType = "resources:connect"
+	// TransactionsResourceEventType is the event type for transaction resources.
+	TransactionsResourceEventType EventType = "resources:transactions"
+	// ACLsResourceEventType is the event type for ACL resources.
+	ACLsResourceEventType EventType = "resources:acls"
 )
 
 var m = map[string]EventType{
@@ -40,6 +44,8 @@ var m = map[string]EventType{
 	Nodes:            NodesResourceEventType,
 	Topics:           TopicsResourceEventType,
 	ConsumerGroups:   CgroupsResourceEventType,
+	Transactions:     TransactionsResourceEventType,
+	ACLs:             ACLsResourceEventType,
 	Subjects:         SubjectsResourceEventType,
 	Connectors:       ConnectorsResourceEventType,
 	Connect:          ConnectResourceEventType,
@@ -74,34 +80,58 @@ func (app *App) RunResourcesEventHandler(ctx context.Context, in chan Event) {
 						Payload{nil, false},
 					)
 				case "tps", TopicsResourceEventType:
-					if !app.isClusterSelected(app.Selected) {
-						SendStatusWithDefaultTTL("[red]to perform operation, select cluster")
+					if !app.requireSelection(
+						app.isClusterSelected(app.Selected),
+						"[red]to perform operation, select cluster",
+					) {
 						continue
 					}
 					Publish(TopicsChannel, GetTopicsEventType, Payload{nil, false})
 				case "grs", CgroupsResourceEventType:
-					if !app.isClusterSelected(app.Selected) {
-						SendStatusWithDefaultTTL("[red]to perform operation, select cluster")
+					if !app.requireSelection(
+						app.isClusterSelected(app.Selected),
+						"[red]to perform operation, select cluster",
+					) {
 						continue
 					}
 					Publish(CgroupsChannel, GetCgroupsEventType, Payload{nil, false})
+				case "txns", TransactionsResourceEventType:
+					if !app.requireSelection(
+						app.isClusterSelected(app.Selected),
+						"[red]to perform operation, select cluster",
+					) {
+						continue
+					}
+					Publish(TransactionsChannel, GetTransactionsEventType, Payload{nil, false})
+				case "acls", ACLsResourceEventType:
+					if !app.requireSelection(
+						app.isClusterSelected(app.Selected),
+						"[red]to perform operation, select cluster",
+					) {
+						continue
+					}
+					Publish(ACLsChannel, GetACLsEventType, Payload{nil, false})
 				case "nds", NodesResourceEventType:
-					if !app.isClusterSelected(app.Selected) {
-						SendStatusWithDefaultTTL("[red]to perform operation, select cluster")
+					if !app.requireSelection(
+						app.isClusterSelected(app.Selected),
+						"[red]to perform operation, select cluster",
+					) {
 						continue
 					}
 					Publish(NodesChannel, GetNodesEventType, Payload{nil, false})
 				case "sjs", SubjectsResourceEventType:
-					if !app.isSchemaRegistrySelected(app.Selected) {
-						SendStatusWithDefaultTTL(
-							"[red]to perform operation, select Schema Registry",
-						)
+					if !app.requireSelection(
+						app.isSchemaRegistrySelected(app.Selected),
+						"[red]to perform operation, select Schema Registry",
+					) {
 						continue
 					}
 					Publish(SubjectsChannel, GetSubjectsEventType, Payload{nil, false})
 				case "cnts", ConnectorsResourceEventType:
-					if !app.isConnectSelected(app.Selected) {
-						SendStatusWithDefaultTTL("[red]to perform operation, select Connect")
+					if !app.requireSelection(
+						app.isConnectSelected(app.Selected),
+						"[red]to perform operation, select Connect",
+					) {
 						continue
 					}
 					Publish(ConnectorsChannel, GetConnectorsEventType, Payload{nil, false})
@@ -136,6 +166,8 @@ func (app *App) NewResourcesPage() tview.Primitive {
 	addResource(Nodes)
 	addResource(Topics)
 	addResource(ConsumerGroups)
+	addResource(Transactions)
+	addResource(ACLs)
 	if len(app.Config.Karat.SchemaRegistries) > 0 {
 		addResource(Subjects)
 	}

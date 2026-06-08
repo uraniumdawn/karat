@@ -41,6 +41,28 @@ type ConnectorDetail struct {
 	Config map[string]interface{}
 }
 
+// ConnectorOffset holds a single partition offset entry for a connector.
+type ConnectorOffset struct {
+	TopicPartition string
+	Offset         string
+	// Partition and RawOffset hold the raw JSON maps backing TopicPartition and
+	// Offset, used to rebuild the request body when copying offsets to another connector.
+	Partition map[string]any
+	RawOffset map[string]any
+}
+
+// FormatConnectorOffsets renders connector offsets as an aligned text table
+// with "Topic:Partition" and "Current Offset" columns.
+func FormatConnectorOffsets(offsets []ConnectorOffset) string {
+	var sb strings.Builder
+	w := tabwriter.NewWriter(&sb, 0, 0, 2, ' ', 0)
+	for _, o := range offsets {
+		_, _ = fmt.Fprintf(w, "%s\t%s\n", o.TopicPartition, o.Offset)
+	}
+	_ = w.Flush()
+	return sb.String()
+}
+
 // String returns a formatted text representation of the connector detail.
 func (d *ConnectorDetail) String() string {
 	var sb strings.Builder

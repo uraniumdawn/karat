@@ -116,11 +116,7 @@ func (app *App) Subjects() {
 					table := app.NewSubjectsTable(subjects)
 					title := util.BuildTitle(Subjects,
 						"["+strconv.Itoa(len(subjects))+"]")
-					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
-						table.SetTitle(title + "[" + label + "]")
-					} else {
-						table.SetTitle(title)
-					}
+					table.SetTitle(title)
 					table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 						if event.Key() == tcell.KeyCtrlU {
 							Publish(
@@ -128,16 +124,6 @@ func (app *App) Subjects() {
 								GetSubjectsEventType,
 								Payload{nil, true},
 							)
-						}
-						if event.Key() == tcell.KeyCtrlG {
-							app.EnterAutoUpdateMode(pageKey, func() {
-								Publish(
-									SubjectsChannel,
-									GetSubjectsEventType,
-									Payload{nil, true},
-								)
-							})
-							return nil
 						}
 
 						if event.Key() == tcell.KeyEnter {
@@ -201,9 +187,6 @@ func (app *App) Versions(subject string) {
 					)
 					table := app.NewVersionsTable(versions)
 					title := util.BuildTitle(subject, "["+strconv.Itoa(len(versions))+"]")
-					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
-						title = title + "[" + label + "]"
-					}
 					table.SetTitle(title)
 
 					app.AddToPagesRegistry(pageKey, table, VersionsPageMenu, false)
@@ -214,16 +197,6 @@ func (app *App) Versions(subject string) {
 								GetVersionsEventType,
 								Payload{subject, true},
 							)
-						}
-						if event.Key() == tcell.KeyCtrlG {
-							app.EnterAutoUpdateMode(pageKey, func() {
-								Publish(
-									SubjectsChannel,
-									GetVersionsEventType,
-									Payload{subject, true},
-								)
-							})
-							return nil
 						}
 
 						if IsKey(event, 'd') {
@@ -275,7 +248,10 @@ func (app *App) Schema(subject string, version int) {
 				var pretty bytes.Buffer
 				indentErr := json.Indent(&pretty, []byte(result.Metadata.Schema), "", "  ")
 				if indentErr != nil {
-					errorCh <- indentErr
+					log.Error().Err(indentErr).Msg("failed to format schema")
+					SendStatusWithDefaultTTL(
+						fmt.Sprintf("[red]failed to format schema: %s", indentErr.Error()),
+					)
 					cancel()
 					return
 				}
@@ -290,9 +266,6 @@ func (app *App) Schema(subject string, version int) {
 						v,
 					)
 					title := util.BuildTitle(subject, v)
-					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
-						title = title + "[" + label + "]"
-					}
 					desc := app.NewDescription(title)
 
 					desc.SetInputCapture(
@@ -300,19 +273,6 @@ func (app *App) Schema(subject string, version int) {
 							if event.Key() == tcell.KeyCtrlU {
 								Publish(SubjectsChannel, GetSchemaEventType,
 									Payload{SubjectVersionPair{subject, v}, true})
-							}
-							if event.Key() == tcell.KeyCtrlG {
-								app.EnterAutoUpdateMode(pageKey, func() {
-									Publish(
-										SubjectsChannel,
-										GetSchemaEventType,
-										Payload{
-											SubjectVersionPair{subject, v},
-											true,
-										},
-									)
-								})
-								return nil
 							}
 							return event
 						}),

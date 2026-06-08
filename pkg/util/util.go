@@ -14,11 +14,14 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/uraniumdawn/karat/pkg/config"
 )
 
+// ParseShellCommand expands {{bootstrap}} and {{topic}} placeholders in templateStr
+// and splits the result into shell arguments, respecting quotes.
 func ParseShellCommand(templateStr, topic, bootstrap string) ([]string, error) {
 	// Replace user-friendly {{bootstrap}} and {{topic}} with Go template syntax
 	templateStr = strings.ReplaceAll(templateStr, "{{bootstrap}}", "{{.bootstrap}}")
@@ -108,6 +111,15 @@ func splitShellArgs(s string) ([]string, error) {
 	return args, nil
 }
 
+// SetTableHeaders sets row 0 of table to non-selectable header cells with the given
+// labelColor, one cell per entry in headers, in column order.
+func SetTableHeaders(table *tview.Table, labelColor tcell.Color, headers ...string) {
+	for col, text := range headers {
+		table.SetCell(0, col, tview.NewTableCell(text).SetSelectable(false).SetTextColor(labelColor))
+	}
+}
+
+// TableToCSV writes the contents of table to fileName in CSV format.
 func TableToCSV(fileName string, table *tview.Table) {
 	file, _ := os.Create(fileName)
 	defer func() {
@@ -132,6 +144,7 @@ func TableToCSV(fileName string, table *tview.Table) {
 	}
 }
 
+// NewModal centers p in a flex layout sized for a general-purpose modal.
 func NewModal(p tview.Primitive) tview.Primitive {
 	return tview.NewFlex().
 		AddItem(nil, 0, 2, false).
@@ -142,6 +155,7 @@ func NewModal(p tview.Primitive) tview.Primitive {
 		AddItem(nil, 2, 0, false)
 }
 
+// NewConfirmationModal centers p in a flex layout sized for a small confirmation dialog.
 func NewConfirmationModal(p tview.Primitive) tview.Primitive {
 	return tview.NewFlex().
 		AddItem(nil, 1, 0, false).
@@ -152,6 +166,7 @@ func NewConfirmationModal(p tview.Primitive) tview.Primitive {
 		AddItem(nil, 1, 0, false)
 }
 
+// NewResourceModal centers p in a flex layout with a fixed height, sized for resource forms.
 func NewResourceModal(p tview.Primitive, height int) tview.Primitive {
 	return tview.NewFlex().
 		AddItem(nil, 0, 2, false).
@@ -162,6 +177,7 @@ func NewResourceModal(p tview.Primitive, height int) tview.Primitive {
 		AddItem(nil, 2, 0, false)
 }
 
+// NewTopicModal centers p in a flex layout sized for topic creation/edit forms.
 func NewTopicModal(p tview.Primitive) tview.Primitive {
 	return tview.NewFlex().
 		AddItem(nil, 0, 2, false).
@@ -172,6 +188,7 @@ func NewTopicModal(p tview.Primitive) tview.Primitive {
 		AddItem(nil, 2, 0, false)
 }
 
+// NewConnectorActionModal centers p in a flex layout sized for connector action dialogs.
 func NewConnectorActionModal(p tview.Primitive) tview.Primitive {
 	return tview.NewFlex().
 		AddItem(nil, 0, 2, false).
@@ -182,6 +199,7 @@ func NewConnectorActionModal(p tview.Primitive) tview.Primitive {
 		AddItem(nil, 2, 0, false)
 }
 
+// GetInt64 parses an int64 from an input field, returns -1 if empty or invalid.
 func GetInt64(inputField *tview.InputField) int64 {
 	text := inputField.GetText()
 	if text == "" {
@@ -254,7 +272,7 @@ func BuildPageKey(parts ...string) string {
 	return builder.String()
 }
 
-// BuildCliCommand Supported placeholders: {{bootstrap}}, {{topic}}, {{srURL}}
+// BuildCliCommand expands {{bootstrap}}, {{topic}}, and {{srURL}} placeholders in templateStr.
 func BuildCliCommand(templateStr, bootstrap, topic, schemaRegistryURL string) string {
 	result := strings.ReplaceAll(templateStr, "{{bootstrap}}", bootstrap)
 	result = strings.ReplaceAll(result, "{{topic}}", topic)

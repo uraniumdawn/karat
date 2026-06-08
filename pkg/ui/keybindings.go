@@ -151,15 +151,6 @@ func (app *App) MainOperationKeyHandler() {
 			app.ShowModalPage(OpenedPages)
 		}
 
-		// if event.Key() == tcell.KeyEsc && !app.IsSearchInFocus() {
-		// 	currentPage, _ := app.Layout.PagesRegistry.UI.Pages.GetFrontPage()
-		// 	if app.Layout.PagesRegistry.IsPersistentPage(currentPage) {
-		// 		app.Backward()
-		// 		return nil
-		// 	}
-		// 	return event
-		// }
-
 		if event.Key() == tcell.KeyRune && event.Rune() == 'h' && !app.IsSearchInFocus() {
 			currentPage, _ := app.Layout.PagesRegistry.UI.Pages.GetFrontPage()
 			if app.Layout.PagesRegistry.IsPersistentPage(currentPage) {

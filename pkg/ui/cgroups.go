@@ -169,11 +169,7 @@ func (app *App) setupGroupsTable(
 	title string,
 	onRefresh func(),
 ) {
-	displayTitle := title
-	if label := app.GetAutoUpdateLabel(pageKey); label != "" {
-		displayTitle = title + "[" + label + "]"
-	}
-	table.SetTitle(displayTitle)
+	table.SetTitle(title)
 	app.AddToPagesRegistry(pageKey, table, ConsumerGroupsPageMenu, true)
 
 	sortCol := 0
@@ -183,11 +179,6 @@ func (app *App) setupGroupsTable(
 	table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyCtrlU {
 			onRefresh()
-		}
-
-		if event.Key() == tcell.KeyCtrlG {
-			app.EnterAutoUpdateMode(pageKey, onRefresh)
-			return nil
 		}
 
 		if IsKey(event, 'd') {
@@ -398,7 +389,11 @@ func (app *App) ConsumerGroup(name string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("getting consumer group description")
+	pageKey := util.BuildPageKey(app.Selected.Cluster.Name, ConsumerGroup, name)
+	autoRefreshing := app.GetAutoUpdateLabel(pageKey) != ""
+	if !autoRefreshing {
+		SendStatusInfinite("getting consumer group description")
+	}
 	c.DescribeConsumerGroup(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -409,7 +404,6 @@ func (app *App) ConsumerGroup(name string) {
 				app.QueueUpdateDraw(func() {
 					description.SetPrevLagByTopic(app.cgroupPrevLag[name])
 					app.cgroupPrevLag[name] = description.GetLagByTopic()
-					pageKey := util.BuildPageKey(app.Selected.Cluster.Name, ConsumerGroup, name)
 					title := util.BuildTitle(ConsumerGroup, name)
 					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
 						title = title + "[" + label + "]"
@@ -425,7 +419,7 @@ func (app *App) ConsumerGroup(name string) {
 									Payload{name, true},
 								)
 							}
-							if event.Key() == tcell.KeyCtrlG {
+							if IsKey(event, 'g') {
 								app.EnterAutoUpdateMode(pageKey, func() {
 									Publish(
 										CgroupsChannel,
@@ -463,7 +457,7 @@ func (app *App) ConsumerGroup(name string) {
 								)
 							}
 
-							if event.Key() == tcell.KeyCtrlE {
+							if IsKey(event, 'c') {
 								if app.IsCurrentClusterReadOnly() {
 									SendStatusWithDefaultTTL(
 										"[red]cluster is in read-only mode",
@@ -479,7 +473,9 @@ func (app *App) ConsumerGroup(name string) {
 						}),
 					)
 					app.AddToPagesRegistry(pageKey, desc, ConsumerGroupDescribePageMenu, false)
-					ClearStatus()
+					if !autoRefreshing {
+						ClearStatus()
+					}
 				})
 				cancel()
 				return
@@ -1300,11 +1296,7 @@ func (app *App) CopyConsumerGroupOffsetsBatchResultHandler(sourceGroup, targetGr
 
 // addGroupsTableHeader adds a fixed header row (row 0) with label-coloured cells.
 func addGroupsTableHeader(table *tview.Table, labelColor tcell.Color) {
-	mkHeader := func(text string) *tview.TableCell {
-		return tview.NewTableCell(text).SetSelectable(false).SetTextColor(labelColor)
-	}
-	table.SetCell(0, 0, mkHeader("Name"))
-	table.SetCell(0, 1, mkHeader("State"))
+	util.SetTableHeaders(table, labelColor, "Name", "State")
 }
 
 // sortGroupsTable rebuilds the table sorted by col (0=Name, 1=State).

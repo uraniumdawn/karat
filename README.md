@@ -3,7 +3,7 @@
 A powerful Terminal UI (TUI) for Apache Kafka that provides an intuitive, keyboard-driven interface for managing and monitoring your Kafka clusters, topics, consumer groups, and Schema Registry.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Go Version](https://img.shields.io/badge/go-%3E%3D1.21-blue)
+![Go Version](https://img.shields.io/badge/go-%3E%3D1.25-blue)
 
 ![uranium_v3](examples/style/uranium_v3.png)
 
@@ -24,13 +24,18 @@ A powerful Terminal UI (TUI) for Apache Kafka that provides an intuitive, keyboa
 
 - **Multi-Cluster Management** - Connect and switch between multiple Kafka clusters seamlessly
 - **Topics Management** - Browse, create, edit configs, increase partitions, and delete Kafka topics
-- **Consumer Groups** - Monitor consumer groups, view lag and partition assignments, reset offsets
+- **Topic Producers** - View active producers and in-flight transactions per partition for a topic
+- **Hide Internal Topics** - Toggle hiding of internal topics (`__*`, `*-changelog`, `*-repartition` by default) with configurable regex patterns
+- **Extra Actions Menu** - Context menu (`>`) on topic pages for secondary actions like Consume, CLI commands, and Producers
+- **Consumer Groups** - Monitor consumer groups, view lag and partition assignments, reset offsets, copy offsets to a new group
+- **Transactions** - Browse cluster-wide Kafka transactions (transactional ID, producer ID, state, timeout, partitions)
+- **ACLs** - View cluster access control lists (principal, resource, pattern type, operation, permission)
 - **Schema Registry Integration** - Browse subjects, view schema versions, and inspect schemas
-- **Kafka Connect Management** - View, manage, and monitor Kafka Connect connectors
+- **Kafka Connect Management** - View, manage, and monitor Kafka Connect connectors, including pause/resume/restart/stop actions and source connector offset management
 - **Broker & Node Management** - View cluster node information and configurations
 - **CLI Command Templates** - Execute external tools (kcat, kafka-console-consumer) with auto-filled parameters
 - **Page History Navigation** - Forward/backward navigation through opened pages with dynamic menu keybindings
-- **Inline Search & Filtering** - Fuzzy search across topics, consumer groups, subjects, and connectors
+- **Inline Search & Filtering** - Fuzzy search across topics, consumer groups, subjects, connectors, transactions, and ACLs
 - **Column Sorting** - Sort table views by any column with ascending/descending toggle
 - **In-Memory Cache** - 5-minute TTL cache per resource; force-refresh any view with `Ctrl+U`
 - **Update Notifications** - Checks GitHub for newer releases on startup and shows an update hint in the status bar
@@ -46,10 +51,12 @@ Access via `:` (colon) key. Schema Registry and Connect resources appear only wh
 | **Schema-registries** | Schema Registry instances | Select |
 | **Connect** | Kafka Connect instances | Select |
 | **Nodes** | Kafka brokers | List, describe |
-| **Topics** | Kafka topics | List, describe, create, edit configs, increase partitions, delete, search, sort, CLI templates |
-| **Consumer groups** | Consumer groups | List, describe, view lag, reset offsets, delete (Empty state only), find by topic, search, sort |
+| **Topics** | Kafka topics | List, describe (incl. on-disk size), create, edit configs, increase partitions, delete, search, sort, hide internal topics, view producers, CLI templates, extra actions menu |
+| **Consumer groups** | Consumer groups | List, describe, view lag, reset offsets, copy offsets to a new group, delete (Empty state only), find by topic, search, sort |
+| **Transactions** | Cluster-wide Kafka transactions | List, describe, search, sort |
+| **ACLs** | Cluster access control lists | List, search, sort |
 | **Subjects** | Schema Registry subjects | List, view versions, inspect schemas, search |
-| **Connectors** | Kafka Connect connectors | List, describe, pause/resume/restart, delete, search, sort |
+| **Connectors** | Kafka Connect connectors | List, describe, pause/resume/restart/stop, delete, manage source connector offsets, search, sort |
 
 
 ## Installation
@@ -120,6 +127,16 @@ karat:
   api:
     timeout: 30       # API call timeout in seconds (default: 30)
     max_concurrency: 10  # Max parallel Kafka API calls, e.g. for consumer group offset queries (default: 10)
+
+  # UI Configuration (optional)
+  ui:
+    # Regex patterns used to classify topics as internal when hiding internal
+    # topics (press "i" on the Topics page). Overrides the built-in defaults
+    # (^__.*, .*-changelog$, .*-repartition$).
+    internal_topic_patterns:
+      - "^__.*"
+      - ".*-changelog$"
+      - ".*-repartition$"
 
   # Style file path (optional) — see examples/style/ for ready-made themes
   style: ~/.config/karat/my_style.yaml
@@ -218,9 +235,16 @@ sasl.password: ${KAFKA_PASSWORD}
 - `timeout` — timeout in seconds for all Kafka Admin API calls (cluster describe, topic operations, consumer group queries). Default: 30
 - `max_concurrency` — maximum number of parallel Kafka API calls, used when querying consumer group offsets across many groups. Default: 10
 
+**UI settings (`ui:`):**
+- `internal_topic_patterns` — list of regular expressions used to classify topics as internal when hiding internal topics (`i` on the Topics page). Replaces the built-in defaults (`^__.*`, `.*-changelog$`, `.*-repartition$`) entirely if set.
+
 **Read-only mode:**
 - Set `mode: read-only` on a cluster or Kafka Connect instance to prevent any write operations (create, edit, delete, actions) via the UI
 - Useful for protecting production environments
+
+**Transactions, ACLs, Topic Producers, and topic size:**
+- These features connect to the cluster via [franz-go](https://github.com/twmb/franz-go), built from the same `properties` as the cluster's main connection
+- Supported SASL mechanisms: `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512`. If the cluster's `sasl.mechanism`/`sasl.mechanisms` is unsupported, these views show a connectivity error while the rest of the UI continues to work normally
 
 ### Style
 
@@ -241,7 +265,7 @@ The style file is merged on top of the built-in defaults, so you only need to ov
 
 ### Prerequisites
 
-- Go 1.21 or higher
+- Go 1.25 or higher
 - librdkafka (for Kafka client library)
 - A running Kafka cluster for testing
 
@@ -296,6 +320,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **[tview](https://github.com/rivo/tview)** - Powerful terminal UI framework with rich widgets
 - **[tcell](https://github.com/gdamore/tcell)** - Low-level terminal handling and colors
 - **[confluent-kafka-go](https://github.com/confluentinc/confluent-kafka-go)** - Official Kafka Go client
+- **[franz-go](https://github.com/twmb/franz-go)** - Kafka client used for transactions, ACLs, producer, and log directory queries
 - **[librdkafka](https://github.com/confluentinc/librdkafka)** - High-performance C library for Kafka
 - **[go-cache](https://github.com/patrickmn/go-cache)** - In-memory caching with expiration
 - **[fuzzysearch](https://github.com/lithammer/fuzzysearch)** - Fuzzy string matching for search

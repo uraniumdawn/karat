@@ -54,7 +54,7 @@ func (r *ResourceResult) String() string {
 				e.Value,
 				e.Source,
 				e.IsReadOnly,
-				e.IsReadOnly,
+				e.IsDefault,
 			)
 			if err != nil {
 				log.Error().Err(err).Msg("failed to write config entry")
@@ -75,10 +75,17 @@ func (r *TopicResult) String() string {
 		_, _ = fmt.Fprintf(w, "Partitions count:\t%d\n", len(desc.Partitions))
 
 		totalMessages := r.GetTotalMessages()
-		estimatedSize, isEstimate := r.GetEstimatedSizeBytes()
 		_, _ = fmt.Fprintf(w, "Total Messages:\t%s\n", util.FormatNumber(totalMessages))
-		_, _ = fmt.Fprintf(w, "Estimated Size:\t%s\n",
-			util.FormatSizeWithFallback(estimatedSize, totalMessages, isEstimate))
+		if actualSize, sizeHint, ok := r.GetActualSize(); ok {
+			_, _ = fmt.Fprintf(w, "Size:\t%s\n", util.FormatBytes(actualSize))
+			if sizeHint != "" {
+				_, _ = fmt.Fprintf(w, "Size Hint:\t%s\n", sizeHint)
+			}
+		} else {
+			estimatedSize, isEstimate := r.GetEstimatedSizeBytes()
+			_, _ = fmt.Fprintf(w, "Estimated Size:\t%s\n",
+				util.FormatSizeWithFallback(estimatedSize, totalMessages, isEstimate))
+		}
 		_, _ = fmt.Fprintf(w, "Messages Last Hour:\t%s\n", util.FormatNumber(r.GetMessagesLastHour()))
 	}
 	_ = w.Flush()
@@ -150,7 +157,7 @@ func (r *TopicResult) String() string {
 				e.Value,
 				e.Source,
 				e.IsReadOnly,
-				e.IsReadOnly,
+				e.IsDefault,
 			)
 			if err != nil {
 				log.Error().Err(err).Msg("failed to write config entry")
@@ -205,7 +212,10 @@ func (r *DescribeConsumerGroupResult) String() string {
 		topicLags = append(topicLags, topicLagPair{topic, lag})
 	}
 	sort.Slice(topicLags, func(i, j int) bool {
-		return topicLags[i].lag > topicLags[j].lag
+		if topicLags[i].lag != topicLags[j].lag {
+			return topicLags[i].lag > topicLags[j].lag
+		}
+		return topicLags[i].topic < topicLags[j].topic
 	})
 	for _, tl := range topicLags {
 		trend := ""

@@ -7,6 +7,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,16 +20,18 @@ import (
 	"github.com/sahilm/fuzzy"
 
 	"github.com/uraniumdawn/karat/pkg/client"
+	"github.com/uraniumdawn/karat/pkg/franz"
 	"github.com/uraniumdawn/karat/pkg/util"
 )
 
 const (
-	GetTopicsEventType    EventType = "topics:get"
-	GetTopicEventType     EventType = "topic:get"
-	CreateTopicEventType  EventType = "topic:create"
-	DeleteTopicEventType  EventType = "topic:delete"
-	EditTopicEventType    EventType = "topic:edit"
-	CliTemplatesEventType EventType = "topic:cli-templates"
+	GetTopicsEventType         EventType = "topics:get"
+	GetTopicEventType          EventType = "topic:get"
+	GetTopicProducersEventType EventType = "topic:producers"
+	CreateTopicEventType       EventType = "topic:create"
+	DeleteTopicEventType       EventType = "topic:delete"
+	EditTopicEventType         EventType = "topic:edit"
+	CliTemplatesEventType      EventType = "topic:cli-templates"
 )
 
 var TopicsChannel = make(chan Event)
@@ -61,6 +64,17 @@ func (app *App) RunTopicsEventHandler(ctx context.Context, in chan Event) {
 						app.SwitchToPage(pageName)
 					} else {
 						app.Topic(topicName)
+					}
+
+				case GetTopicProducersEventType:
+					topicName := event.Payload.Data.(string)
+					force := event.Payload.Force
+					pageName := util.BuildPageKey(app.Selected.Cluster.Name, Producers, topicName)
+					_, found := app.Cache.Get(pageName)
+					if found && !force {
+						app.SwitchToPage(pageName)
+					} else {
+						app.TopicProducers(topicName)
 					}
 
 				case CreateTopicEventType:
@@ -118,31 +132,27 @@ func (app *App) Topics() {
 					table := app.NewTopicsTable(topics)
 					title := util.BuildTitle(Topics,
 						"["+strconv.Itoa(len(topics.Result))+"]")
-					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
-						title = title + "[" + label + "]"
-					}
-					table.SetTitle(title)
 					app.AddToPagesRegistry(pageKey, table, TopicsPageMenu, true)
 
 					// app.InitConsumingParams()
 
 					sortCol := 0
 					sortDesc := false
+					hideInternal := app.HideInternalTopics
 					labelColor := tcell.GetColor(app.Colors.Karat.Label.FgColor)
+
+					updateTitle := func(filterText string) {
+						t := title
+						if hideInternal {
+							t = strings.TrimRight(t, " ") + "[grey] hide-internal[-] "
+						}
+						util.SetSearchableTableTitle(table, t, filterText)
+					}
+					updateTitle("")
 
 					table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 						if event.Key() == tcell.KeyCtrlU {
 							Publish(TopicsChannel, GetTopicsEventType, Payload{nil, true})
-						}
-						if event.Key() == tcell.KeyCtrlG {
-							app.EnterAutoUpdateMode(pageKey, func() {
-								Publish(
-									TopicsChannel,
-									GetTopicsEventType,
-									Payload{nil, true},
-								)
-							})
-							return nil
 						}
 						if IsKey(event, 'd') {
 							row, _ := table.GetSelection()
@@ -190,17 +200,10 @@ func (app *App) Topics() {
 							app.UpdateTopic(topicName)
 						}
 
-						if IsKey(event, 't') {
+						if IsKey(event, '>') {
 							row, _ := table.GetSelection()
 							topicName := table.GetCell(row, 0).Text
-							app.CliTemplates(topicName)
-						}
-
-						if IsKey(event, 'r') {
-							row, _ := table.GetSelection()
-							topicName := table.GetCell(row, 0).Text
-							app.ConsumeModal(topicName)
-							app.ShowModalPage(ConsumeParams)
+							app.ShowExtraActions(TopicsExtraActions, topicName)
 						}
 
 						if IsKey(event, '1') {
@@ -216,6 +219,8 @@ func (app *App) Topics() {
 								sortCol,
 								sortDesc,
 								labelColor,
+								hideInternal,
+								app.InternalTopicPatterns,
 							)
 							table.ScrollToBeginning()
 							return event
@@ -234,7 +239,38 @@ func (app *App) Topics() {
 								sortCol,
 								sortDesc,
 								labelColor,
+								hideInternal,
+								app.InternalTopicPatterns,
 							)
+							table.ScrollToBeginning()
+							return event
+						}
+
+						if IsKey(event, 'i') {
+							hideInternal = !hideInternal
+							app.HideInternalTopics = hideInternal
+							filterText := app.CurrentFilters[pageKey]
+							if filterText != "" {
+								filterTopicsTable(
+									table,
+									topics.Result,
+									filterText,
+									labelColor,
+									hideInternal,
+									app.InternalTopicPatterns,
+								)
+							} else {
+								sortTopicsTable(
+									table,
+									topics.Result,
+									sortCol,
+									sortDesc,
+									labelColor,
+									hideInternal,
+									app.InternalTopicPatterns,
+								)
+							}
+							updateTitle(filterText)
 							table.ScrollToBeginning()
 							return event
 						}
@@ -243,8 +279,15 @@ func (app *App) Topics() {
 					})
 
 					app.AssignSearch(func(text string) {
-						filterTopicsTable(table, topics.Result, text, labelColor)
-						util.SetSearchableTableTitle(table, title, text)
+						filterTopicsTable(
+							table,
+							topics.Result,
+							text,
+							labelColor,
+							hideInternal,
+							app.InternalTopicPatterns,
+						)
+						updateTitle(text)
 						table.ScrollToBeginning()
 					})
 
@@ -271,16 +314,49 @@ func (app *App) Topic(name string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("getting topic description")
+	fc := app.GetCurrentFranzClient()
+	pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Topic, name)
+	autoRefreshing := app.GetAutoUpdateLabel(pageKey) != ""
+	if !autoRefreshing {
+		SendStatusInfinite("getting topic description")
+	}
 	c.DescribeTopic(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	type topicSizeResult struct {
+		size franz.TopicLogDirSummary
+		ok   bool
+	}
+	sizeCh := make(chan topicSizeResult, 1)
+	if fc != nil {
+		go func() {
+			size, err := fc.TopicLogDirSize(ctx, name)
+			if err != nil {
+				log.Debug().
+					Err(err).
+					Str("topic", name).
+					Msg("failed to get actual topic size")
+				sizeCh <- topicSizeResult{}
+				return
+			}
+			sizeCh <- topicSizeResult{size: size, ok: true}
+		}()
+	} else {
+		sizeCh <- topicSizeResult{}
+	}
 
 	go func() {
 		for {
 			select {
 			case description := <-resultCh:
+				select {
+				case sr := <-sizeCh:
+					if sr.ok {
+						description.SetActualSize(sr.size.TotalSizeBytes, sr.size.Hint)
+					}
+				case <-ctx.Done():
+				}
 				app.QueueUpdateDraw(func() {
-					pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Topic, name)
 					title := util.BuildTitle(Topic, name)
 					if label := app.GetAutoUpdateLabel(pageKey); label != "" {
 						title = title + "[" + label + "]"
@@ -296,7 +372,7 @@ func (app *App) Topic(name string) {
 									Payload{name, true},
 								)
 							}
-							if event.Key() == tcell.KeyCtrlG {
+							if IsKey(event, 'g') {
 								app.EnterAutoUpdateMode(pageKey, func() {
 									Publish(
 										TopicsChannel,
@@ -306,11 +382,17 @@ func (app *App) Topic(name string) {
 								})
 								return nil
 							}
+							if IsKey(event, '>') {
+								app.ShowExtraActions(TopicDescriptionExtraActions, name)
+								return nil
+							}
 							return event
 						}),
 					)
 					app.AddToPagesRegistry(pageKey, desc, TopicDecriptionPageMenu, false)
-					ClearStatus()
+					if !autoRefreshing {
+						ClearStatus()
+					}
 				})
 				cancel()
 				return
@@ -325,6 +407,69 @@ func (app *App) Topic(name string) {
 				return
 			}
 		}
+	}()
+}
+
+// TopicProducers fetches and displays the active producers (and any open transactions)
+// for each partition of the given topic, via the franz-go client.
+func (app *App) TopicProducers(name string) {
+	fc := app.GetCurrentFranzClient()
+	if fc == nil {
+		SendStatusWithDefaultTTL("[red]producers view requires franz-go connectivity for this cluster")
+		return
+	}
+
+	pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Producers, name)
+	autoRefreshing := app.GetAutoUpdateLabel(pageKey) != ""
+	if !autoRefreshing {
+		SendStatusInfinite("getting topic producers")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		defer cancel()
+		result, err := fc.DescribeTopicProducers(ctx, name)
+		if err != nil {
+			log.Error().Err(err).Str("topic", name).Msg("failed to describe topic producers")
+			SendStatusWithDefaultTTL(
+				fmt.Sprintf("[red]failed to describe topic producers: %s", err.Error()),
+			)
+			return
+		}
+		app.QueueUpdateDraw(func() {
+			title := util.BuildTitle(Producers, name)
+			if label := app.GetAutoUpdateLabel(pageKey); label != "" {
+				title = title + "[" + label + "]"
+			}
+			desc := app.NewDescription(title)
+			desc.SetText(result.String())
+			desc.SetInputCapture(
+				app.WithHScroll(desc, func(event *tcell.EventKey) *tcell.EventKey {
+					if event.Key() == tcell.KeyCtrlU {
+						Publish(
+							TopicsChannel,
+							GetTopicProducersEventType,
+							Payload{name, true},
+						)
+					}
+					if IsKey(event, 'g') {
+						app.EnterAutoUpdateMode(pageKey, func() {
+							Publish(
+								TopicsChannel,
+								GetTopicProducersEventType,
+								Payload{name, true},
+							)
+						})
+						return nil
+					}
+					return event
+				}),
+			)
+			app.AddToPagesRegistry(pageKey, desc, TopicProducersPageMenu, false)
+			if !autoRefreshing {
+				ClearStatus()
+			}
+		})
 	}()
 }
 
@@ -753,7 +898,7 @@ func (app *App) NewTopicsTable(topics *client.TopicsResult) *tview.Table {
 	table.SetFixed(1, 0)
 
 	labelColor := tcell.GetColor(app.Colors.Karat.Label.FgColor)
-	sortTopicsTable(table, topics.Result, 0, false, labelColor)
+	sortTopicsTable(table, topics.Result, 0, false, labelColor, app.HideInternalTopics, app.InternalTopicPatterns)
 
 	return table
 }
@@ -966,12 +1111,7 @@ func (app *App) NewUpdateTopicModal(topicName string, topicResult *client.TopicR
 
 // addTopicsTableHeader adds a fixed header row (row 0) with label-coloured cells.
 func addTopicsTableHeader(table *tview.Table, labelColor tcell.Color) {
-	mkHeader := func(text string) *tview.TableCell {
-		return tview.NewTableCell(text).SetSelectable(false).SetTextColor(labelColor)
-	}
-	table.SetCell(0, 0, mkHeader("Name"))
-	table.SetCell(0, 1, mkHeader("Partitions"))
-	table.SetCell(0, 2, mkHeader("Replication"))
+	util.SetTableHeaders(table, labelColor, "Name", "Partitions", "Replication")
 }
 
 func populateTable(table *tview.Table, row int, t string, partitions, replicas int) {
@@ -980,14 +1120,28 @@ func populateTable(table *tview.Table, row int, t string, partitions, replicas i
 	table.SetCell(row, 2, tview.NewTableCell(strconv.Itoa(replicas)))
 }
 
+// isInternalTopic reports whether name matches one of the configured internal
+// topic patterns (karat.ui.internal_topic_patterns).
+func isInternalTopic(name string, patterns []*regexp.Regexp) bool {
+	for _, re := range patterns {
+		if re.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
 // sortTopicsTable rebuilds the table sorted by col (0=Name, 1=Partitions).
 // Partitions tiebreaks by Name ascending. Adds ↑/↓ indicator to the active header cell.
+// If hideInternal is true, internal topics (see isInternalTopic) are omitted.
 func sortTopicsTable(
 	table *tview.Table,
 	metadata map[string]*kafka.TopicMetadata,
 	col int,
 	desc bool,
 	labelColor tcell.Color,
+	hideInternal bool,
+	internalPatterns []*regexp.Regexp,
 ) {
 	type entry struct {
 		name       string
@@ -997,6 +1151,9 @@ func sortTopicsTable(
 
 	entries := make([]entry, 0, len(metadata))
 	for name, meta := range metadata {
+		if hideInternal && isInternalTopic(name, internalPatterns) {
+			continue
+		}
 		p := len(meta.Partitions)
 		r := 0
 		if p > 0 {
@@ -1047,12 +1204,17 @@ func filterTopicsTable(
 	metadata map[string]*kafka.TopicMetadata,
 	filter string,
 	labelColor tcell.Color,
+	hideInternal bool,
+	internalPatterns []*regexp.Regexp,
 ) {
 	table.Clear()
 	addTopicsTableHeader(table, labelColor)
 
 	var topics []string
 	for topicName := range metadata {
+		if hideInternal && isInternalTopic(topicName, internalPatterns) {
+			continue
+		}
 		topics = append(topics, topicName)
 	}
 
