@@ -5,6 +5,9 @@
 package ui
 
 import (
+	"strconv"
+	"strings"
+
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
@@ -17,9 +20,18 @@ const (
 	// TopicDescriptionExtraActions is the registry key for extra actions available
 	// from the topic description page.
 	TopicDescriptionExtraActions = "topic-description"
+	// ConsumerGroupsExtraActions is the registry key for extra actions available
+	// from the consumer groups list page.
+	ConsumerGroupsExtraActions = "consumer-groups"
 	// TopicsExtraActions is the registry key for extra actions available from the
 	// topics list page.
 	TopicsExtraActions = "topics"
+	// SubjectsExtraActions is the registry key for extra actions available from the
+	// subjects list page.
+	SubjectsExtraActions = "subjects"
+	// VersionsExtraActions is the registry key for extra actions available from the
+	// subject versions page.
+	VersionsExtraActions = "versions"
 )
 
 // ExtraAction describes a single entry in the "Extra Actions" modal.
@@ -33,6 +45,15 @@ type ExtraAction struct {
 
 // extraActionsRegistry maps a page kind to the list of extra actions it offers.
 var extraActionsRegistry = map[string][]ExtraAction{
+	ConsumerGroupsExtraActions: {
+		{
+			Name: "Find by topic",
+			Run: func(app *App, _ string) {
+				app.FindConsumerGroupsByTopicModal()
+				app.ShowModalPage(FindBy)
+			},
+		},
+	},
 	TopicDescriptionExtraActions: {
 		{
 			Name: "Producers",
@@ -53,6 +74,62 @@ var extraActionsRegistry = map[string][]ExtraAction{
 			Name: "CLI commands",
 			Run: func(app *App, ctx string) {
 				app.CliTemplates(ctx)
+			},
+		},
+		{
+			Name: "Clone topic",
+			Run: func(app *App, ctx string) {
+				if app.IsCurrentClusterReadOnly() {
+					SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+					return
+				}
+				app.CloneTopic(ctx)
+			},
+		},
+	},
+	SubjectsExtraActions: {
+		{
+			Name: "Find schema by ID",
+			Run: func(app *App, _ string) {
+				app.FindSchemaByIDModal()
+				app.ShowModalPage(FindSchemaByID)
+			},
+		},
+		{
+			Name: "Clone subject",
+			Run: func(app *App, ctx string) {
+				if app.IsCurrentSchemaRegistryReadOnly() {
+					SendStatusWithDefaultTTL("[red]schema registry is in read-only mode")
+					return
+				}
+				app.CloneSubject(ctx)
+			},
+		},
+		{
+			Name: "Delete subject",
+			Run: func(app *App, ctx string) {
+				if app.IsCurrentSchemaRegistryReadOnly() {
+					SendStatusWithDefaultTTL("[red]schema registry is in read-only mode")
+					return
+				}
+				app.DeleteSubjectConfirm(ctx)
+				app.ShowModalPage(DeleteSubject)
+			},
+		},
+	},
+	VersionsExtraActions: {
+		{
+			Name: "Delete version",
+			Run: func(app *App, ctx string) {
+				if app.IsCurrentSchemaRegistryReadOnly() {
+					SendStatusWithDefaultTTL("[red]schema registry is in read-only mode")
+					return
+				}
+				parts := strings.SplitN(ctx, "\x00", 2)
+				subject := parts[0]
+				version, _ := strconv.Atoi(parts[1])
+				app.DeleteSubjectVersionConfirm(subject, version)
+				app.ShowModalPage(DeleteSubjectVersion)
 			},
 		},
 	},

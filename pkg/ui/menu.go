@@ -84,7 +84,7 @@ var keys = map[string]Pair{
 		Value: "Auto-update mode",
 	},
 	"extra_actions": {
-		Key:   "<>>",
+		Key:   "<.>",
 		Value: "Extra",
 	},
 	"auto_upd_tab": {
@@ -302,12 +302,18 @@ const (
 	CreateTopicInputMenu                = "CreateTopicInputMenu"
 	DeleteTopicPageMenu                 = "DeleteTopicPageMenu"
 	DeleteConsumerGroupPageMenu         = "DeleteConsumerGroupPageMenu"
+	CloneTopicPageMenu                  = "CloneTopicPageMenu"
+	CloneTopicInputMenu                 = "CloneTopicInputMenu"
 	EditTopicPageMenu                   = "EditTopicPageMenu"
 	EditTopicInputMenu                  = "EditTopicInputMenu"
 	ResetOffsetPageMenu                 = "ResetOffsetPageMenu"
 	CopyConsumerGroupPageMenu           = "CopyConsumerGroupPageMenu"
 	CopyConnectorOffsetsPageMenu        = "CopyConnectorOffsetsPageMenu"
 	ConsumerGroupsPageMenu              = "ConsumerGroupsPageMenu"
+	CloneSubjectPageMenu                = "CloneSubjectPageMenu"
+	CloneSubjectInputMenu               = "CloneSubjectInputMenu"
+	DeleteSubjectPageMenu               = "DeleteSubjectPageMenu"
+	DeleteSubjectVersionPageMenu        = "DeleteSubjectVersionPageMenu"
 	SubjectsPageMenu                    = "SubjectsPageMenu"
 	VersionsPageMenu                    = "VersionsPageMenu"
 	ConsumerGroupDescribePageMenu       = "ConsumerGroupDescribePageMenu"
@@ -332,6 +338,7 @@ const (
 	DeleteConnectorOffsetsPageMenu      = "DeleteConnectorOffsetsPageMenu"
 	ConnectPageMenu                     = "ConnectPageMenu"
 	FindByPageMenu                      = "FindByPageMenu"
+	FindSchemaByIDPageMenu              = "FindSchemaByIDPageMenu"
 	ConsumeOutputPageMenu               = "ConsumeOutputPageMenu"
 	ConsumeParamsPageMenu               = "ConsumeParamsPageMenu"
 	ConsumeHelpPageMenu                 = "ConsumeHelpPageMenu"
@@ -373,6 +380,16 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"close",
 			},
 			CreateTopicInputMenu: {
+				"esc_confirm",
+			},
+			CloneTopicPageMenu: {
+				"sel",
+				"edit",
+				"submit_ctrl",
+				"default",
+				"close",
+			},
+			CloneTopicInputMenu: {
 				"esc_confirm",
 			},
 			EditTopicPageMenu: {
@@ -489,7 +506,7 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"dsc",
 				"sort_2",
 				"delete_cg",
-				"find",
+				"extra_actions",
 				"search",
 				"upd",
 				"opened",
@@ -536,6 +553,23 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"opened",
 				"b/f",
 			},
+			CloneSubjectPageMenu: {
+				"sel",
+				"edit",
+				"submit_ctrl",
+				"close",
+			},
+			CloneSubjectInputMenu: {
+				"esc_confirm",
+			},
+			DeleteSubjectPageMenu: {
+				"confirm",
+				"cancel",
+			},
+			DeleteSubjectVersionPageMenu: {
+				"confirm",
+				"cancel",
+			},
 			SubjectsPageMenu: {
 				"sel",
 				"select",
@@ -543,6 +577,7 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"search",
 				"opened",
 				"upd",
+				"extra_actions",
 				"b/f",
 			},
 			VersionsPageMenu: {
@@ -551,6 +586,7 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"dsc",
 				"opened",
 				"upd",
+				"extra_actions",
 				"b/f",
 			},
 			ConnectorsPageMenu: {
@@ -658,9 +694,12 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"b/f",
 			},
 			FindByPageMenu: {
-				"sel",
-				"enter_value",
-				"esc",
+				"submit_ctrl",
+				"cancel",
+			},
+			FindSchemaByIDPageMenu: {
+				"submit_ctrl",
+				"cancel",
 			},
 		},
 		Colors: colors,

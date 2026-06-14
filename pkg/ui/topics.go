@@ -200,7 +200,7 @@ func (app *App) Topics() {
 							app.UpdateTopic(topicName)
 						}
 
-						if IsKey(event, '>') {
+						if IsKey(event, '.') {
 							row, _ := table.GetSelection()
 							topicName := table.GetCell(row, 0).Text
 							app.ShowExtraActions(TopicsExtraActions, topicName)
@@ -382,7 +382,7 @@ func (app *App) Topic(name string) {
 								})
 								return nil
 							}
-							if IsKey(event, '>') {
+							if IsKey(event, '.') {
 								app.ShowExtraActions(TopicDescriptionExtraActions, name)
 								return nil
 							}
@@ -642,8 +642,8 @@ retention.ms=604800000`).
 
 			app.CreateTopicResultHandler(
 				params.TopicName,
-				params.ReplicationFactor,
 				params.Partitions,
+				params.ReplicationFactor,
 				params.Config,
 			)
 			app.HideModalPage(CreateTopic)
@@ -701,6 +701,282 @@ func (app *App) CreateTopicResultHandler(
 			}
 		}
 	}()
+}
+
+// CloneTopic fetches the source topic's description and opens a modal to create
+// a new topic with the same configuration.
+func (app *App) CloneTopic(sourceTopic string) {
+	resultCh := make(chan *client.TopicResult)
+	errorCh := make(chan error)
+
+	c := app.GetCurrentKafkaClient()
+	SendStatusInfinite("fetching topic configuration")
+	c.DescribeTopic(sourceTopic, resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		for {
+			select {
+			case topicResult := <-resultCh:
+				partitionCount := 0
+				replicationFactor := 0
+				if len(topicResult.TopicDescriptions) > 0 {
+					desc := topicResult.TopicDescriptions[0]
+					partitionCount = len(desc.Partitions)
+					if len(desc.Partitions) > 0 {
+						replicationFactor = len(desc.Partitions[0].Replicas)
+					}
+				}
+
+				sourceConfig := make(map[string]string)
+				for _, configResult := range topicResult.Config {
+					for _, entry := range configResult.Config {
+						if !entry.IsDefault && !entry.IsReadOnly {
+							sourceConfig[entry.Name] = entry.Value
+						}
+					}
+				}
+
+				app.QueueUpdateDraw(func() {
+					app.NewCloneTopicModal(
+						sourceTopic,
+						partitionCount,
+						replicationFactor,
+						sourceConfig,
+					)
+					app.ShowModalPage(CloneTopic)
+					ClearStatus()
+				})
+				cancel()
+				return
+			case err := <-errorCh:
+				log.Error().Err(err).Msg("failed to fetch topic config")
+				SendStatusWithDefaultTTL(
+					fmt.Sprintf("[red]failed to fetch topic config: %s", err.Error()),
+				)
+				cancel()
+				return
+			case <-ctx.Done():
+				log.Error().Msg("timeout while fetching topic config")
+				SendStatusWithDefaultTTL("[red]timeout while fetching topic config")
+				return
+			}
+		}
+	}()
+}
+
+// NewCloneTopicModal builds a "Clone Topic" modal pre-filled with the source topic's
+// partition count, replication factor, and non-default configuration entries.
+func (app *App) NewCloneTopicModal(
+	sourceTopic string,
+	srcPartitions int,
+	srcReplicationFactor int,
+	srcConfig map[string]string,
+) {
+	params := &TopicParams{
+		TopicName:         sourceTopic,
+		ReplicationFactor: srcReplicationFactor,
+		Partitions:        srcPartitions,
+		Config:            srcConfig,
+	}
+	width := 40
+
+	topicName := tview.NewInputField().
+		SetFieldWidth(width).
+		SetFieldStyle(
+			tcell.StyleDefault.Foreground(
+				tcell.GetColor(app.Colors.Karat.Foreground),
+			).Background(
+				tcell.GetColor(app.Colors.Karat.Background),
+			)).
+		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder)).
+		SetText(sourceTopic)
+
+	replicationFactor := tview.NewInputField().
+		SetFieldWidth(width).
+		SetFieldStyle(
+			tcell.StyleDefault.Foreground(
+				tcell.GetColor(app.Colors.Karat.Foreground),
+			).Background(
+				tcell.GetColor(app.Colors.Karat.Background),
+			)).
+		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder)).
+		SetText(fmt.Sprintf("%d", srcReplicationFactor))
+	replicationFactor.SetAcceptanceFunc(tview.InputFieldInteger)
+
+	partitions := tview.NewInputField().
+		SetFieldWidth(width).
+		SetFieldStyle(
+			tcell.StyleDefault.Foreground(
+				tcell.GetColor(app.Colors.Karat.Foreground),
+			).Background(
+				tcell.GetColor(app.Colors.Karat.Background),
+			)).
+		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder)).
+		SetText(fmt.Sprintf("%d", srcPartitions))
+	partitions.SetAcceptanceFunc(tview.InputFieldInteger)
+
+	configTextArea := tview.NewTextArea()
+	var configLines []string
+	for key, value := range srcConfig {
+		configLines = append(configLines, fmt.Sprintf("%s=%s", key, value))
+	}
+	if len(configLines) > 0 {
+		sort.Strings(configLines)
+		configTextArea.SetText(strings.Join(configLines, "\n"), false)
+	} else {
+		configTextArea.SetPlaceholder(`Enter properties (one per line):
+cleanup.policy=delete
+retention.ms=604800000`).
+			SetPlaceholderStyle(
+				tcell.StyleDefault.Foreground(
+					tcell.GetColor(app.Colors.Karat.Placeholder),
+				))
+	}
+
+	selection := tview.NewTable()
+	selection.SetCell(
+		0,
+		0,
+		tview.NewTableCell("Name:").
+			SetAlign(tview.AlignRight).
+			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
+	)
+	selection.SetCell(
+		1,
+		0,
+		tview.NewTableCell("Replication factor:").
+			SetAlign(tview.AlignRight).
+			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
+	)
+	selection.SetCell(
+		2,
+		0,
+		tview.NewTableCell("Partitions:").
+			SetAlign(tview.AlignRight).
+			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
+	)
+	selection.SetCell(
+		3,
+		0,
+		tview.NewTableCell("Configs (optional):").
+			SetAlign(tview.AlignRight).
+			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
+	)
+	selection.SetSelectable(true, false)
+	selection.SetBorderPadding(0, 0, 1, 0)
+	selection.SetSelectedStyle(
+		tcell.StyleDefault.Foreground(
+			tcell.GetColor(app.Colors.Karat.Selection.FgColor),
+		).Background(
+			tcell.GetColor(app.Colors.Karat.Selection.BgColor),
+		),
+	)
+
+	f := tview.NewFlex()
+	f.SetDirection(tview.FlexColumn)
+	f.AddItem(selection, 20, 0, true)
+	f.AddItem(tview.NewBox(), 3, 0, false)
+
+	inputs := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(topicName, 1, 0, false).
+		AddItem(replicationFactor, 1, 0, false).
+		AddItem(partitions, 1, 0, false).
+		AddItem(configTextArea, 0, 1, false)
+
+	f.AddItem(inputs, 40, 0, false).
+		AddItem(tview.NewBox(), 0, 1, false)
+
+	topicName.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEsc {
+			params.TopicName = topicName.GetText()
+			app.SetFocus(selection)
+			app.Layout.Menu.SetMenu(CloneTopicPageMenu)
+		}
+		return event
+	})
+
+	replicationFactor.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEsc {
+			params.ReplicationFactor, _ = strconv.Atoi(replicationFactor.GetText())
+			app.SetFocus(selection)
+			app.Layout.Menu.SetMenu(CloneTopicPageMenu)
+		}
+		return event
+	})
+
+	partitions.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEsc {
+			params.Partitions, _ = strconv.Atoi(partitions.GetText())
+			app.SetFocus(selection)
+			app.Layout.Menu.SetMenu(CloneTopicPageMenu)
+		}
+		return event
+	})
+
+	configTextArea.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEsc {
+			propertiesText := configTextArea.GetText()
+			params.Config = parseConfig(propertiesText)
+			app.SetFocus(selection)
+			app.Layout.Menu.SetMenu(CloneTopicPageMenu)
+			return nil
+		}
+		return event
+	})
+
+	inputFields := []*tview.InputField{topicName, replicationFactor, partitions}
+	selection.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		row, _ := selection.GetSelection()
+
+		if IsKey(event, 'e') {
+			if row < len(inputFields) {
+				app.SetFocus(inputFields[row])
+				app.Layout.Menu.SetMenu(CloneTopicInputMenu)
+			} else if row == 3 {
+				app.SetFocus(configTextArea)
+				app.Layout.Menu.SetMenu(CloneTopicInputMenu)
+			}
+		}
+
+		if IsCtrlEnter(event) {
+			params.TopicName = topicName.GetText()
+			params.ReplicationFactor, _ = strconv.Atoi(replicationFactor.GetText())
+			params.Partitions, _ = strconv.Atoi(partitions.GetText())
+			params.Config = parseConfig(configTextArea.GetText())
+
+			if err := params.validate(); err != nil {
+				SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+				return event
+			}
+
+			app.CreateTopicResultHandler(
+				params.TopicName,
+				params.Partitions,
+				params.ReplicationFactor,
+				params.Config,
+			)
+			app.HideModalPage(CloneTopic)
+		}
+
+		if event.Key() == tcell.KeyEsc {
+			app.HideModalPage(CloneTopic)
+		}
+
+		return event
+	})
+
+	flex := tview.NewFlex().
+		SetDirection(tview.FlexRow).
+		AddItem(f, 0, 1, true)
+	flex.SetTitle(fmt.Sprintf(" Clone Topic (from %s) ", sourceTopic))
+	flex.SetBorder(true)
+
+	modal := util.NewTopicModal(flex)
+	app.Layout.PagesRegistry.UI.Pages.AddPage(CloneTopic, modal, true, true)
+	app.Layout.PagesRegistry.UI.Pages.ShowPage(CloneTopic)
+	app.SetFocus(topicName)
+	app.Layout.Menu.SetMenu(CloneTopicInputMenu)
 }
 
 func (app *App) UpdateTopic(topicName string) {

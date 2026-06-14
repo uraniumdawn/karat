@@ -47,10 +47,14 @@ const (
 	Transaction            = "Transaction"
 	ACLs                   = "ACLs"
 	Subjects               = "Subjects"
+	CloneSubject           = "Clone Subject"
+	DeleteSubject          = "Delete Subject"
+	DeleteSubjectVersion   = "Delete Subject Version"
 	Connectors             = "Connectors"
 	Connect                = "Connect"
 	OpenedPages            = "Opened pages"
 	CreateTopic            = "Create Topic"
+	CloneTopic             = "Clone Topic"
 	DeleteTopic            = "Delete Topic"
 	DeleteConsumerGroup    = "Delete Consumer Group"
 	EditTopic              = "Edit Topic"
@@ -65,6 +69,7 @@ const (
 	CopyConnectorOffsets   = "Copy Connector Offsets"
 	CliTemplates           = "CLI Templates"
 	FindBy                 = "Find By"
+	FindSchemaByID         = "Find Schema By ID"
 	ConsumeOutput          = "Consume Output"
 	ConsumeParams          = "Consume Params"
 	ConsumeHelp            = "Consume Help"
@@ -117,6 +122,11 @@ func (app *App) GetCurrentFranzClient() *franz.Client {
 // IsCurrentClusterReadOnly reports whether the selected cluster is in read-only mode.
 func (app *App) IsCurrentClusterReadOnly() bool {
 	return app.Selected.Cluster != nil && app.Selected.Cluster.IsReadOnly()
+}
+
+// IsCurrentSchemaRegistryReadOnly reports whether the selected schema registry is in read-only mode.
+func (app *App) IsCurrentSchemaRegistryReadOnly() bool {
+	return app.Selected.SchemaRegistry != nil && app.Selected.SchemaRegistry.IsReadOnly()
 }
 
 // IsCurrentConnectReadOnly reports whether the selected Connect cluster is in read-only mode.
