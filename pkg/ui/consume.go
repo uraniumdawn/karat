@@ -133,6 +133,12 @@ func (app *App) StartConsuming(
 			SendStatusInfiniteWithouSpinner(fmt.Sprintf("consumed %d records", cnt))
 		}()
 		for rec := range records {
+			if ctx.Err() != nil {
+				// Stop requested — drain the channel without further rendering so
+				// Consume can close it and this goroutine can finalize promptly,
+				// instead of working through a backlog of queued UI draws.
+				continue
+			}
 			line := formatFn(rec)
 			if filter != "" && !strings.Contains(line, filter) {
 				continue

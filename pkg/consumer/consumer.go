@@ -167,7 +167,11 @@ func Consume(ctx context.Context, params Params, records chan<- Record, errs cha
 			if params.KeySerdes.Kind != SerdesRaw {
 				decoded, decErr := decodeWithSerdes(e.Key, params.KeySerdes, params.Topic, keyDeser)
 				if decErr != nil {
-					errs <- decErr
+					select {
+					case errs <- decErr:
+					case <-ctx.Done():
+						return
+					}
 				} else {
 					key = decoded
 				}
@@ -182,7 +186,11 @@ func Consume(ctx context.Context, params Params, records chan<- Record, errs cha
 				value, decErr = decodeValue(params.Topic, e.Value, params.Format, valDeser)
 			}
 			if decErr != nil {
-				errs <- decErr
+				select {
+				case errs <- decErr:
+				case <-ctx.Done():
+					return
+				}
 				value = string(e.Value)
 			}
 
@@ -191,7 +199,8 @@ func Consume(ctx context.Context, params Params, records chan<- Record, errs cha
 				headers = append(headers, fmt.Sprintf("%s=%s", h.Key, string(h.Value)))
 			}
 
-			records <- Record{
+			select {
+			case records <- Record{
 				Partition: partition,
 				Offset:    offset,
 				Timestamp: e.Timestamp,
@@ -199,6 +208,9 @@ func Consume(ctx context.Context, params Params, records chan<- Record, errs cha
 				Value:     value,
 				Headers:   headers,
 				Size:      size,
+			}:
+			case <-ctx.Done():
+				return
 			}
 			if params.MaxCount > 0 {
 				partitionDelivered[partition]++
@@ -212,7 +224,11 @@ func Consume(ctx context.Context, params Params, records chan<- Record, errs cha
 
 		case kafka.Error:
 			log.Error().Err(e).Msg("consumer error")
-			errs <- e
+			select {
+			case errs <- e:
+			case <-ctx.Done():
+				return
+			}
 			if e.IsFatal() {
 				return
 			}

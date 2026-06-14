@@ -223,6 +223,14 @@ var keys = map[string]Pair{
 		Key:   "<F2>",
 		Value: "Consume stats",
 	},
+	"schema_karat": {
+		Key:   "<1>",
+		Value: "Karat format",
+	},
+	"schema_json": {
+		Key:   "<2>",
+		Value: "JSON format",
+	},
 	"delete_cli": {
 		Key:   "<Ctrl+d>",
 		Value: "Remove page",
@@ -638,6 +646,8 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"hlscroll",
 				"opened",
 				"upd",
+				"schema_karat",
+				"schema_json",
 				"b/f",
 			},
 			NodeDecriptionPageMenu: {

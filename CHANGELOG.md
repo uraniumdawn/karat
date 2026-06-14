@@ -8,6 +8,18 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.2.5] - 2026-06-14
+
+## Features
+
+* **Karat format for Avro schemas**: on the Schema Registry "Schema" description page, press `1` to view the schema in Karat's compact, hierarchical text format (`<name>:<type>:<extra>` per line), or `2` to switch back to pretty-printed JSON (default).
+
+## Enhancements
+
+* Stopping consumption (`t`) now reacts immediately, even on hot topics — the consumer goroutine and UI no longer block on a backlog of in-flight messages/draws.
+
+---
+
 ## [0.2.4] - 2026-06-13
 
 ## Features
@@ -69,7 +81,8 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-[Unreleased]: https://github.com/uraniumdawn/karat/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/uraniumdawn/karat/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/uraniumdawn/karat/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/uraniumdawn/karat/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/uraniumdawn/karat/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/uraniumdawn/karat/compare/v0.2.1...v0.2.2
