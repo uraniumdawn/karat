@@ -187,9 +187,8 @@ func (app *App) setupGroupsTable(
 			Publish(CgroupsChannel, GetCgroupEventType, Payload{groupName, false})
 		}
 
-		if IsKey(event, 'f') {
-			app.FindConsumerGroupsByTopicModal()
-			app.ShowModalPage(FindBy)
+		if IsKey(event, '.') {
+			app.ShowExtraActions(ConsumerGroupsExtraActions, "")
 		}
 
 		if event.Key() == tcell.KeyCtrlD {
@@ -305,37 +304,22 @@ func (app *App) ConsumerGroupsByTopic(topicName string) {
 }
 
 // FindConsumerGroupsByTopicModal creates and registers the "find by topic" modal.
-// Layout mirrors the Reset Offset table: selectable row on the left, input field on the right.
 func (app *App) FindConsumerGroupsByTopicModal() {
-	foregroundColor := tcell.GetColor(app.Colors.Karat.Foreground)
-	backgroundColor := tcell.GetColor(app.Colors.Karat.Background)
-	selectedStyle := tcell.StyleDefault.
-		Foreground(tcell.GetColor(app.Colors.Karat.Selection.FgColor)).
-		Background(tcell.GetColor(app.Colors.Karat.Selection.BgColor))
-
-	table := tview.NewTable()
-	table.SetBorder(false)
-	table.SetBorderPadding(0, 0, 1, 0)
-	table.SetSelectable(true, false)
-	table.SetSelectedStyle(selectedStyle)
-	table.SetCell(0, 0, tview.NewTableCell("find consumer group by topic").SetSelectable(true))
-
 	input := tview.NewInputField().
-		SetFieldWidth(30).
+		SetFieldWidth(40).
 		SetFieldStyle(
 			tcell.StyleDefault.
-				Foreground(foregroundColor).
-				Background(backgroundColor),
+				Foreground(tcell.GetColor(app.Colors.Karat.Foreground)).
+				Background(tcell.GetColor(app.Colors.Karat.Background)),
 		).
 		SetPlaceholderStyle(
-			tcell.StyleDefault.Background(backgroundColor),
+			tcell.StyleDefault.Background(tcell.GetColor(app.Colors.Karat.Background)),
 		).
-		SetPlaceholder("-").
+		SetPlaceholder("topic name").
 		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder))
 
 	input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Key() {
-		case tcell.KeyEnter:
+		if IsCtrlEnter(event) {
 			topicName := strings.TrimSpace(input.GetText())
 			if topicName == "" {
 				SendStatusWithDefaultTTL("[red]topic name cannot be empty")
@@ -344,42 +328,21 @@ func (app *App) FindConsumerGroupsByTopicModal() {
 			app.HideModalPage(FindBy)
 			Publish(CgroupsChannel, FindCgroupsByTopicEventType, Payload{topicName, false})
 			return nil
-		case tcell.KeyEsc:
-			input.SetText("")
-			app.SetFocus(table)
-			return nil
 		}
-		return event
-	})
-
-	table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Key() {
-		case tcell.KeyEnter:
-			app.SetFocus(input)
-			return nil
-		case tcell.KeyEsc:
+		if event.Key() == tcell.KeyEsc {
 			app.HideModalPage(FindBy)
 			return nil
 		}
 		return event
 	})
 
-	// Input flex aligns the field to the same row as the table entry.
-	inputFlex := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(input, 1, 0, false)
+	flex := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(input, 1, 0, true)
+	flex.SetTitle(" Find Consumer Group By Topic ")
+	flex.SetBorder(true)
+	flex.SetBorderPadding(0, 0, 1, 0)
 
-	row := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(table, 0, 2, true).
-		AddItem(tview.NewBox(), 1, 0, false).
-		AddItem(inputFlex, 0, 1, false)
-
-	mainFlex := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(row, 1, 0, true)
-	mainFlex.SetTitle(" Find ")
-	mainFlex.SetBorder(true)
-
-	// height: 1 border top + 1 content row + 1 border bottom = 3
-	modal := util.NewResourceModal(mainFlex, 3)
+	modal := util.NewResourceModal(flex, 3)
 	app.Layout.PagesRegistry.UI.Pages.AddPage(FindBy, modal, true, false)
 }
 

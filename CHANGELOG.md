@@ -8,6 +8,32 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.2.7] - 2026-06-21
+
+## Features
+
+* **Clone Topic** (`.` → "Clone topic" on Topics list or Topic description): fetches the source topic's partition count, replication factor, and non-default config entries, then opens a pre-filled modal to create a new topic with the same configuration.
+* **Clone Subject** (`.` → "Clone subject" on Subjects list): fetches the source subject's latest schema and compatibility level, then opens a modal to register the schema under a new subject name with the same compatibility.
+* **Delete Subject** (`.` → "Delete subject" on Subjects list): soft-deletes all versions of a subject, with a confirmation modal.
+* **Delete Subject Version** (`.` → "Delete version" on Versions page): soft-deletes a specific version of a subject, with a confirmation modal.
+* **Find Schema by ID** (`.` → "Find schema by ID" on Subjects list): enter a global schema ID to view the schema, with JSON (`2`) / Karat (`1`) format toggle.
+* **Extra Actions for Subjects and Versions**: `.` key now opens the Extra Actions modal on the Subjects list and Versions pages.
+* **Extra Actions for Consumer Groups**: `.` key opens the Extra Actions modal on the Consumer Groups page, starting with "Find by topic".
+
+## Enhancements
+
+* Schema description page title now shows `<subject> [v:<version>] [id:<schema_id>]`.
+* Karat format is now the default view for schema descriptions (both by subject/version and by ID), falling back to JSON when Karat formatting fails. Toggle with `1` (karat) / `2` (JSON).
+* Extra Actions keybinding changed from `>` to `.` across all pages (Topics, Consumer Groups, Subjects, Versions).
+* "Find consumer group by topic" moved from the `f` keybinding into the Extra Actions modal and simplified to a single input field with `Ctrl+Enter` to submit.
+* Read-only mode is now enforced for Schema Registry mutating operations (clone, delete) — blocked with a status message when the registry is marked read-only.
+
+## Bug Fixes
+
+* Fixed swapped `Partitions` / `ReplicationFactor` arguments in `CreateTopicResultHandler` call.
+
+---
+
 ## [0.2.6] - 2026-06-14
 
 ## Enhancements
@@ -89,7 +115,8 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-[Unreleased]: https://github.com/uraniumdawn/karat/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/uraniumdawn/karat/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/uraniumdawn/karat/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/uraniumdawn/karat/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/uraniumdawn/karat/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/uraniumdawn/karat/compare/v0.2.3...v0.2.4
