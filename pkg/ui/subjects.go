@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -257,6 +258,11 @@ func (app *App) Schema(subject string, version int) {
 				}
 				formattedSchema = pretty.String()
 
+				karatFormatted, karatErr := util.FormatAvroSchemaKarat(result.Metadata.Schema)
+				if karatErr != nil {
+					log.Error().Err(karatErr).Msg("failed to format schema in Karat format")
+				}
+
 				app.QueueUpdateDraw(func() {
 					v := strconv.Itoa(version)
 					pageKey := util.BuildPageKey(
@@ -265,25 +271,51 @@ func (app *App) Schema(subject string, version int) {
 						"version",
 						v,
 					)
-					title := util.BuildTitle(subject, v)
-					desc := app.NewDescription(title)
+					baseTitle := strings.TrimRight(util.BuildTitle(subject, v), " ")
+					desc := app.NewDescription(baseTitle)
+
+					setContent := func(format, content string) {
+						desc.Clear()
+						writer := tview.ANSIWriter(desc)
+						_, err := writer.Write([]byte(content))
+						if err != nil {
+							log.Error().Err(err).Msg("failed to write formatted schema")
+							SendStatusWithDefaultTTL(
+								"[red]failed to write formatted schema",
+							)
+						}
+						desc.SetTitle(fmt.Sprintf("%s (%s) ", baseTitle, format))
+					}
 
 					desc.SetInputCapture(
 						app.WithHScroll(desc, func(event *tcell.EventKey) *tcell.EventKey {
 							if event.Key() == tcell.KeyCtrlU {
 								Publish(SubjectsChannel, GetSchemaEventType,
 									Payload{SubjectVersionPair{subject, v}, true})
+								return event
+							}
+							if IsKey(event, '1') {
+								if karatErr != nil {
+									SendStatusWithDefaultTTL(
+										fmt.Sprintf(
+											"[red]failed to format schema: %s",
+											karatErr.Error(),
+										),
+									)
+									return nil
+								}
+								setContent("karat", karatFormatted)
+								return nil
+							}
+							if IsKey(event, '2') {
+								setContent("json", formattedSchema)
+								return nil
 							}
 							return event
 						}),
 					)
 
-					writer := tview.ANSIWriter(desc)
-					_, err := writer.Write([]byte(formattedSchema))
-					if err != nil {
-						log.Error().Err(err).Msg("failed to write formatted schema")
-						SendStatusWithDefaultTTL("[red]failed to write formatted schema")
-					}
+					setContent("json", formattedSchema)
 					app.AddToPagesRegistry(pageKey, desc, SubjectDecriptionPageMenu, false)
 					ClearStatus()
 				})
