@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # Kafka for event streaming
   kafka:
-    image: bitnami/kafka:4.0
+    image: soldevelo/kafka:4.0
     container_name: kafka
     ports:
       - "9092:9092"
@@ -38,7 +38,7 @@ services:
   
   # Topics initialization
   topic-setup:
-    image: bitnami/kafka:4.0
+    image: soldevelo/kafka:4.0
     container_name: kafka-setup
     depends_on:
       - kafka
