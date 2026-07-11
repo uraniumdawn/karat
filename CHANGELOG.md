@@ -8,6 +8,22 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.2.8] - 2026-07-25
+
+## Features
+
+* **Topic size column**: the Topics list now shows each topic's actual on-disk size (summed across all replicas of all partitions). Sizes are fetched with a single `DescribeLogDirs` request per broker (via franz-go), filled in asynchronously so the list renders immediately, cached for 5 minutes, and refreshable with `Ctrl+U`. While the sizes are still on their way the header reads `Size…`. Sort by size with `3`. Requires franz-go connectivity — the column shows `-` when unavailable, and prefixes `~` when some replicas did not report (possible undercount).
+* **Connector health column**: the Connectors list now shows a derived health per connector — `HEALTHY`, `DEGRADED` (some tasks failed), `UNHEALTHY` (connector failed, or running with no tasks / all tasks failed), plus `PAUSED` / `STOPPED` / `RESTARTING` / `UNASSIGNED` / `UNKNOWN`. Reuses the already-fetched connector statuses (no extra API calls). Sort by health with `4`.
+* **Consumer-group lag column**: the Consumer Groups list (and the find-by-topic view) now shows each group's total lag — the sum over its committed partitions of (log-end − committed) offsets. Fetched with one `ListConsumerGroupOffsets` per group plus a single `ListOffsets` for all partitions, filled in asynchronously, cached for 5 minutes, and refreshable with `Ctrl+U`. While the lags are still on their way the header reads `Lag…`. Sort by lag with `3`.
+
+## Enhancements
+
+* **Configurable features** (`karat.features` in `config.yaml`): the columns that cost extra Kafka API calls can now be switched off individually — `topic_size` (Topics `Size` column and the topic description's actual size) and `consumer_group_lag` (Consumer Groups `Lag` column). Both default to `true`; setting one to `false` hides the column, drops its `3` sort key, and stops the extra cluster requests it needs. Useful on large or slow clusters.
+* **Clone Subject** now copies the subject's entire schema version history — every version is fetched and re-registered oldest-first — instead of only the latest schema, preserving the full version lineage under the new subject.
+* **Clone Consumer Group** (`.` → "Clone consumer group" on the Consumer Groups list): copies the source group's committed offsets to a new consumer group. Previously triggered by the `c` key on the Consumer Group description page; now consolidated into the Extra Actions modal to align with Clone Topic and Clone Subject.
+
+---
+
 ## [0.2.7] - 2026-06-21
 
 ## Features

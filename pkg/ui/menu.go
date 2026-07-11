@@ -104,8 +104,8 @@ var keys = map[string]Pair{
 		Value: "Default",
 	},
 	"create": {
-		Key:   "<c>",
-		Value: "Create Topic",
+		Key:   "<n>",
+		Value: "New Topic",
 	},
 	"delete_t": {
 		Key:   "<Ctrl+d>",
@@ -122,6 +122,10 @@ var keys = map[string]Pair{
 	"delete_conn": {
 		Key:   "<Ctrl+d>",
 		Value: "Delete Connector",
+	},
+	"create_conn": {
+		Key:   "<n>",
+		Value: "New Connector",
 	},
 	"delete_offsets": {
 		Key:   "<Ctrl+d>",
@@ -142,10 +146,6 @@ var keys = map[string]Pair{
 	"reset_offset": {
 		Key:   "<o>",
 		Value: "Reset Offsets",
-	},
-	"copy_cgroup": {
-		Key:   "<c>",
-		Value: "Copy to...",
 	},
 	"confirm": {
 		Key:   "<Ctrl+Enter>",
@@ -301,6 +301,7 @@ const (
 	CreateTopicPageMenu                 = "CreateTopicPageMenu"
 	CreateTopicInputMenu                = "CreateTopicInputMenu"
 	DeleteTopicPageMenu                 = "DeleteTopicPageMenu"
+	RecreateTopicPageMenu               = "RecreateTopicPageMenu"
 	DeleteConsumerGroupPageMenu         = "DeleteConsumerGroupPageMenu"
 	CloneTopicPageMenu                  = "CloneTopicPageMenu"
 	CloneTopicInputMenu                 = "CloneTopicInputMenu"
@@ -325,6 +326,7 @@ const (
 	ExtraActionsPageMenu                = "ExtraActionsPageMenu"
 	SubjectDecriptionPageMenu           = "SubjectDescriptionPageMenu"
 	NodeDecriptionPageMenu              = "NodeDescriptionPageMenu"
+	ClusterDescriptionPageMenu          = "ClusterDescriptionPageMenu"
 	ConnectorDescriptionPageMenu        = "ConnectorDescriptionPageMenu"
 	ConnectorDescriptionPageMenuRunning = "ConnectorDescriptionPageMenuRunning"
 	TaskActionsPageMenu                 = "TaskActionsPageMenu"
@@ -333,6 +335,7 @@ const (
 	CliExecutePageMenu                  = "CliExecutePageMenu"
 	ConnectorsPageMenu                  = "ConnectorsPageMenu"
 	ConnectorConfigEditPageMenu         = "ConnectorConfigEditPageMenu"
+	CreateConnectorPageMenu             = "CreateConnectorPageMenu"
 	ConnectorActionsPageMenu            = "ConnectorActionsPageMenu"
 	DeleteConnectorPageMenu             = "DeleteConnectorPageMenu"
 	DeleteConnectorOffsetsPageMenu      = "DeleteConnectorOffsetsPageMenu"
@@ -348,13 +351,25 @@ const (
 )
 
 // NewMenu builds the keybinding bar, pre-rendering the keybinding rows for every
-// PageMenu defined in its internal map.
-func NewMenu(colors *config.ColorConfig) *Menu {
+// PageMenu defined in its internal map. Hints for optional columns follow cfg: a disabled
+// column takes its sort key with it.
+func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 	table := tview.NewTable().
 		SetSelectable(false, false)
 
 	flex := tview.NewFlex().SetDirection(tview.FlexColumn)
 	flex.AddItem(table, 0, 1, true)
+
+	// Topics sorts by Name/Partitions/Size, Consumer Groups by Name/State/Lag — the third
+	// key disappears with the optional column it sorts.
+	topicsSort := "sort_3"
+	if !cfg.TopicSizeEnabled() {
+		topicsSort = "sort_2"
+	}
+	groupsSort := "sort_3"
+	if !cfg.ConsumerGroupLagEnabled() {
+		groupsSort = "sort_2"
+	}
 
 	return &Menu{
 		Content: table,
@@ -411,6 +426,10 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"confirm",
 				"cancel",
 			},
+			RecreateTopicPageMenu: {
+				"confirm",
+				"cancel",
+			},
 			DeleteConsumerGroupPageMenu: {
 				"confirm",
 				"cancel",
@@ -460,7 +479,7 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"sel",
 				"res",
 				"dsc",
-				"sort_2",
+				topicsSort,
 				"toggle_internal",
 				"create",
 				"delete_t",
@@ -504,7 +523,7 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"sel",
 				"res",
 				"dsc",
-				"sort_2",
+				groupsSort,
 				"delete_cg",
 				"extra_actions",
 				"search",
@@ -515,7 +534,6 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 			ConsumerGroupDescribePageMenu: {
 				"res",
 				"reset_offset",
-				"copy_cgroup",
 				"hlscroll",
 				"opened",
 				"upd",
@@ -596,6 +614,7 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"sort_3",
 				"actions",
 				"edit",
+				"create_conn",
 				"delete_conn",
 				"search",
 				"opened",
@@ -635,6 +654,10 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"close",
 			},
 			ConnectorConfigEditPageMenu: {
+				"submit_ctrl",
+				"cancel",
+			},
+			CreateConnectorPageMenu: {
 				"submit_ctrl",
 				"cancel",
 			},
@@ -687,6 +710,13 @@ func NewMenu(colors *config.ColorConfig) *Menu {
 				"b/f",
 			},
 			NodeDecriptionPageMenu: {
+				"res",
+				"hlscroll",
+				"opened",
+				"upd",
+				"b/f",
+			},
+			ClusterDescriptionPageMenu: {
 				"res",
 				"hlscroll",
 				"opened",

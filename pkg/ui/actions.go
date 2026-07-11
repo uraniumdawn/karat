@@ -53,6 +53,17 @@ var extraActionsRegistry = map[string][]ExtraAction{
 				app.ShowModalPage(FindBy)
 			},
 		},
+		{
+			Name: "Clone consumer group",
+			Run: func(app *App, ctx string) {
+				if app.IsCurrentClusterReadOnly() {
+					SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+					return
+				}
+				app.CopyConsumerGroupModal(ctx)
+				app.ShowModalPage(CopyConsumerGroup)
+			},
+		},
 	},
 	TopicDescriptionExtraActions: {
 		{
@@ -84,6 +95,16 @@ var extraActionsRegistry = map[string][]ExtraAction{
 					return
 				}
 				app.CloneTopic(ctx)
+			},
+		},
+		{
+			Name: "Recreate topic",
+			Run: func(app *App, ctx string) {
+				if app.IsCurrentClusterReadOnly() {
+					SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+					return
+				}
+				app.RecreateTopic(ctx)
 			},
 		},
 	},

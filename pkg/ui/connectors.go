@@ -37,6 +37,8 @@ const (
 	DeleteConnectorEventType EventType = "connector:delete"
 	// DeleteConnectorOffsetsEventType is the event type for deleting a connector's offsets.
 	DeleteConnectorOffsetsEventType EventType = "connector:offsets:delete"
+	// CreateConnectorEventType is the event type for creating a new connector.
+	CreateConnectorEventType EventType = "connector:create"
 )
 
 // ConnectorsChannel is the channel for connector events.
@@ -89,6 +91,11 @@ func (app *App) RunConnectorsEventHandler(ctx context.Context, in chan Event) {
 					app.QueueUpdateDraw(func() {
 						app.DeleteConnectorOffsets(connectorName)
 						app.ShowModalPage(DeleteConnectorOffsets)
+					})
+
+				case CreateConnectorEventType:
+					app.QueueUpdateDraw(func() {
+						app.CreateConnectorConfig()
 					})
 				}
 			}
@@ -169,6 +176,20 @@ func (app *App) Connectors() {
 							app.EditConnectorConfig(connectorName)
 						}
 
+						if IsKey(event, 'n') {
+							if app.IsCurrentConnectReadOnly() {
+								SendStatusWithDefaultTTL(
+									"[red]cluster is in read-only mode",
+								)
+								return event
+							}
+							Publish(
+								ConnectorsChannel,
+								CreateConnectorEventType,
+								Payload{nil, false},
+							)
+						}
+
 						if event.Key() == tcell.KeyCtrlD {
 							if app.IsCurrentConnectReadOnly() {
 								SendStatusWithDefaultTTL(
@@ -228,6 +249,25 @@ func (app *App) Connectors() {
 								sortDesc = !sortDesc
 							} else {
 								sortCol = 2
+								sortDesc = false
+							}
+							sortConnectorsTable(
+								table,
+								connectorNames,
+								statuses,
+								sortCol,
+								sortDesc,
+								labelColor,
+							)
+							table.ScrollToBeginning()
+							return event
+						}
+
+						if IsKey(event, '4') {
+							if sortCol == 4 {
+								sortDesc = !sortDesc
+							} else {
+								sortCol = 4
 								sortDesc = false
 							}
 							sortConnectorsTable(
@@ -401,7 +441,7 @@ func (app *App) ConnectorDetail(name string) {
 
 // addConnectorsTableHeader adds a fixed header row (row 0) with label-coloured cells.
 func addConnectorsTableHeader(table *tview.Table, labelColor tcell.Color) {
-	util.SetTableHeaders(table, labelColor, "Name", "State", "Type", "Tasks")
+	util.SetTableHeaders(table, labelColor, "Name", "State", "Type", "Tasks", "Health")
 }
 
 // sortConnectorsTable rebuilds the table sorted by col (0=Name, 1=State, 2=Type).
@@ -415,23 +455,27 @@ func sortConnectorsTable(
 	labelColor tcell.Color,
 ) {
 	type entry struct {
-		name  string
-		state string
-		ctype string
-		tasks string
+		name   string
+		state  string
+		ctype  string
+		tasks  string
+		health connect.ConnectorHealth
 	}
 
 	entries := make([]entry, 0, len(connectorNames))
 	for _, name := range connectorNames {
 		if status, ok := statuses[name]; ok {
 			entries = append(entries, entry{
-				name:  name,
-				state: status.Connector.State,
-				ctype: strings.ToLower(status.Type),
-				tasks: fmt.Sprintf("%d/%d", runningTasks(status.Tasks), len(status.Tasks)),
+				name:   name,
+				state:  status.Connector.State,
+				ctype:  strings.ToLower(status.Type),
+				tasks:  fmt.Sprintf("%d/%d", runningTasks(status.Tasks), len(status.Tasks)),
+				health: connect.Health(status),
 			})
 		} else {
-			entries = append(entries, entry{name: name, state: "unknown", ctype: "-", tasks: "-"})
+			entries = append(entries, entry{
+				name: name, state: "unknown", ctype: "-", tasks: "-", health: connect.HealthUnknown,
+			})
 		}
 	}
 
@@ -451,6 +495,14 @@ func sortConnectorsTable(
 					return entries[i].ctype > entries[j].ctype
 				}
 				return entries[i].ctype < entries[j].ctype
+			}
+			return entries[i].name < entries[j].name
+		case 4:
+			if entries[i].health != entries[j].health {
+				if desc {
+					return entries[i].health > entries[j].health
+				}
+				return entries[i].health < entries[j].health
 			}
 			return entries[i].name < entries[j].name
 		default:
@@ -475,6 +527,8 @@ func sortConnectorsTable(
 		table.GetCell(0, 1).SetText("State" + indicator)
 	case 2:
 		table.GetCell(0, 2).SetText("Type" + indicator)
+	case 4:
+		table.GetCell(0, 4).SetText("Health" + indicator)
 	}
 
 	for i, e := range entries {
@@ -482,6 +536,7 @@ func sortConnectorsTable(
 		table.SetCell(i+1, 1, tview.NewTableCell(e.state))
 		table.SetCell(i+1, 2, tview.NewTableCell(e.ctype))
 		table.SetCell(i+1, 3, tview.NewTableCell(e.tasks))
+		table.SetCell(i+1, 4, tview.NewTableCell(string(e.health)))
 	}
 }
 
@@ -542,10 +597,12 @@ func filterConnectorsTable(
 				3,
 				tview.NewTableCell(fmt.Sprintf("%d/%d", runningTasks(status.Tasks), len(status.Tasks))),
 			)
+			table.SetCell(i+1, 4, tview.NewTableCell(string(connect.Health(status))))
 		} else {
 			table.SetCell(i+1, 1, tview.NewTableCell("-"))
 			table.SetCell(i+1, 2, tview.NewTableCell("-"))
 			table.SetCell(i+1, 3, tview.NewTableCell("-"))
+			table.SetCell(i+1, 4, tview.NewTableCell(string(connect.HealthUnknown)))
 		}
 	}
 }
@@ -751,6 +808,164 @@ func (app *App) UpdateConnectorConfig(name string, config map[string]interface{}
 			case <-ctx.Done():
 				log.Error().Msg("timeout while updating connector config")
 				SendStatusWithDefaultTTL("[red]timeout while updating connector config")
+				return
+			}
+		}
+	}()
+}
+
+// CreateConnectorConfig opens an external editor for creating a new connector.
+func (app *App) CreateConnectorConfig() {
+	app.openEditorForNewConnector()
+}
+
+// openEditorForNewConnector opens the editor with an empty file and handles the result.
+func (app *App) openEditorForNewConnector() {
+	tmpFile, err := os.CreateTemp("", "connector-create-*.json")
+	if err != nil {
+		log.Error().Err(err).Msg("failed to create temp file")
+		SendStatusWithDefaultTTL("[red]failed to create temp file")
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if err := tmpFile.Close(); err != nil {
+		log.Error().Err(err).Msg("failed to close temp file")
+		SendStatusWithDefaultTTL("[red]failed to close temp file")
+		return
+	}
+
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vim"
+	}
+
+	parts := strings.Fields(editor)
+	cmd := exec.Command(parts[0], append(parts[1:], tmpPath)...)
+
+	tty, ttyErr := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if ttyErr == nil {
+		cmd.Stdin = tty
+		cmd.Stdout = tty
+		cmd.Stderr = tty
+	} else {
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
+
+	app.Suspend(func() {
+		_ = cmd.Run()
+		if tty != nil {
+			_ = tty.Close()
+		}
+	})
+
+	newContent, err := os.ReadFile(tmpPath)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to read connector create file")
+		SendStatusWithDefaultTTL("[red]failed to read connector create file")
+		return
+	}
+
+	if len(bytes.TrimSpace(newContent)) == 0 {
+		SendStatusWithDefaultTTL("[yellow]empty file, aborting")
+		return
+	}
+
+	var req struct {
+		Name   string                 `json:"name"`
+		Config map[string]interface{} `json:"config"`
+	}
+	if err := json.Unmarshal(newContent, &req); err != nil {
+		SendStatusWithDefaultTTL(fmt.Sprintf("[red]invalid JSON: %s", err.Error()))
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		SendStatusWithDefaultTTL("[red]connector name cannot be empty")
+		return
+	}
+	if len(req.Config) == 0 {
+		SendStatusWithDefaultTTL("[red]connector config cannot be empty")
+		return
+	}
+
+	ClearStatus()
+	app.ConnectorCreateConfirm(req.Name, req.Config)
+}
+
+// ConnectorCreateConfirm shows a confirmation modal before creating the connector.
+func (app *App) ConnectorCreateConfirm(name string, config map[string]interface{}) {
+	prettyJSON, err := json.MarshalIndent(config, "", "    ")
+	if err != nil {
+		SendStatusWithDefaultTTL("[red]failed to format config for display")
+		return
+	}
+
+	messageText := tview.NewTextView().
+		SetText(string(prettyJSON)).
+		SetTextAlign(tview.AlignLeft).
+		SetDynamicColors(false)
+
+	messageText.SetBorder(true).
+		SetTitle(fmt.Sprintf(" Confirm Create: %s ", name)).
+		SetBorderPadding(0, 0, 1, 1)
+
+	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if IsCtrlEnter(event) {
+			if app.IsCurrentConnectReadOnly() {
+				SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+				return nil
+			}
+			app.CreateConnectorResultHandler(name, config)
+			app.RemoveFromPagesRegistry(CreateConnector)
+			return nil
+		}
+
+		if event.Key() == tcell.KeyEsc {
+			app.RemoveFromPagesRegistry(CreateConnector)
+			return nil
+		}
+
+		return event
+	})
+
+	app.AddToPagesRegistry(CreateConnector, messageText, CreateConnectorPageMenu, false)
+}
+
+// CreateConnectorResultHandler submits the new connector to Kafka Connect.
+func (app *App) CreateConnectorResultHandler(name string, config map[string]interface{}) {
+	resultCh := make(chan bool)
+	errorCh := make(chan error)
+
+	c := app.GetCurrentConnectClient()
+	SendStatusInfinite(fmt.Sprintf("creating connector '%s'...", name))
+	c.CreateConnector(name, config, resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		for {
+			select {
+			case <-resultCh:
+				SendStatus(
+					fmt.Sprintf("connector '%s' created", name),
+					2*time.Second,
+					false,
+				)
+				Publish(ConnectorsChannel, GetConnectorsEventType, Payload{nil, true})
+				cancel()
+				return
+			case err := <-errorCh:
+				log.Error().Err(err).Msg("failed to create connector")
+				SendStatusWithDefaultTTL(
+					fmt.Sprintf("[red]failed to create connector: %s", err.Error()),
+				)
+				cancel()
+				return
+			case <-ctx.Done():
+				log.Error().Msg("timeout while creating connector")
+				SendStatusWithDefaultTTL("[red]timeout while creating connector")
 				return
 			}
 		}

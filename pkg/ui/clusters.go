@@ -85,7 +85,7 @@ func (app *App) Cluster() {
 						}),
 					)
 
-					app.AddToPagesRegistry(pageKey, desc, ClustersPageMenu, false)
+					app.AddToPagesRegistry(pageKey, desc, ClusterDescriptionPageMenu, false)
 					ClearStatus()
 				})
 				cancel()

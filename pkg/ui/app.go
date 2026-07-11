@@ -55,12 +55,14 @@ const (
 	OpenedPages            = "Opened pages"
 	CreateTopic            = "Create Topic"
 	CloneTopic             = "Clone Topic"
+	RecreateTopic          = "Recreate Topic"
 	DeleteTopic            = "Delete Topic"
 	DeleteConsumerGroup    = "Delete Consumer Group"
 	EditTopic              = "Edit Topic"
 	ResetOffset            = "Reset Offset"
 	CopyConsumerGroup      = "Copy Consumer Group"
 	ConnectorConfigConfirm = "Connector Config Confirm"
+	CreateConnector        = "Create Connector"
 	ConnectorActions       = "Connector Actions"
 	TaskActions            = "Task Actions"
 	ConnectorOffsets       = "Connector Offsets"
@@ -280,7 +282,7 @@ func (app *App) Run() {
 	registry := NewPagesRegistry(app.Colors)
 	hasSR := len(app.Config.Karat.SchemaRegistries) > 0
 	hasConnect := len(app.Config.Karat.Connect) > 0
-	app.Layout = NewLayout(registry, app.Colors, hasSR, hasConnect)
+	app.Layout = NewLayout(registry, app.Colors, app.Config, hasSR, hasConnect)
 
 	for _, c := range app.Config.Karat.Clusters {
 		if c.Selected {

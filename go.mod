@@ -3,7 +3,6 @@ module github.com/uraniumdawn/karat
 go 1.25.0
 
 require (
-	dario.cat/mergo v1.0.2
 	github.com/atotto/clipboard v0.1.4
 	github.com/confluentinc/confluent-kafka-go/v2 v2.14.0
 	github.com/emirpasic/gods v1.18.1
@@ -19,6 +18,7 @@ require (
 )
 
 require (
+	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.11.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.6.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.8.0 // indirect

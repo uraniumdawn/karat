@@ -46,11 +46,13 @@ func (app *App) OpenPagesKeyHandler(filteredTable *tview.Table) {
 			cell := filteredTable.GetCell(row, 1)
 			if cell != nil {
 				pageName := cell.Text
-				if menu, ok := registry.PageMenuMap[pageName]; ok {
-					app.Layout.Menu.SetMenu(menu)
+				if _, ok := registry.PageMenuMap[pageName]; ok {
 					registry.UI.Pages.SwitchToPage(pageName)
 					registry.UI.Pages.ShowPage(OpenedPages)
 					registry.UI.Pages.SendToFront(OpenedPages)
+					// The opened-pages modal owns the bottom bar while it is on top;
+					// keep its menu regardless of which page is highlighted underneath.
+					app.Layout.Menu.SetMenu(OpenedPagesMenu)
 				}
 			}
 		}

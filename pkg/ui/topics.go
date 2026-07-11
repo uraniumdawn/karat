@@ -7,6 +7,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"maps"
 	"regexp"
 	"sort"
 	"strconv"
@@ -52,7 +53,7 @@ func (app *App) RunTopicsEventHandler(ctx context.Context, in chan Event) {
 					if found && !force {
 						app.SwitchToPage(pageName)
 					} else {
-						app.Topics()
+						app.Topics(force)
 					}
 
 				case GetTopicEventType:
@@ -114,7 +115,7 @@ type TopicParams struct {
 	Config            map[string]string
 }
 
-func (app *App) Topics() {
+func (app *App) Topics(force bool) {
 	resultCh := make(chan *client.TopicsResult)
 	errorCh := make(chan error)
 
@@ -129,7 +130,32 @@ func (app *App) Topics() {
 			case topics := <-resultCh:
 				app.QueueUpdateDraw(func() {
 					pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Topics)
-					table := app.NewTopicsTable(topics)
+
+					// size carries the Size column state: whether the feature is enabled
+					// (karat.features.topic_size) and the per-topic sizes map, filled
+					// asynchronously (see below) and shared by reference with the table
+					// builders and the fetch goroutine.
+					size := sizeColumn{
+						enabled: app.Config.TopicSizeEnabled(),
+						sizes:   map[string]franz.TopicLogDirSummary{},
+					}
+					sizesCacheKey := pageKey + ":sizes"
+					sizesCached := false
+					if size.enabled && !force {
+						if cached, ok := app.Cache.Get(sizesCacheKey); ok {
+							if m, ok := cached.(map[string]franz.TopicLogDirSummary); ok {
+								size.sizes = m
+								sizesCached = true
+							}
+						}
+					}
+
+					// Sizes need franz-go; without it the column stays "-" and nothing is
+					// fetched, so the header must not claim to be loading.
+					fc := app.GetCurrentFranzClient()
+					size.loading = size.enabled && !sizesCached && fc != nil
+
+					table := app.NewTopicsTable(topics, size)
 					title := util.BuildTitle(Topics,
 						"["+strconv.Itoa(len(topics.Result))+"]")
 					app.AddToPagesRegistry(pageKey, table, TopicsPageMenu, true)
@@ -164,7 +190,7 @@ func (app *App) Topics() {
 							)
 						}
 
-						if IsKey(event, 'c') {
+						if IsKey(event, 'n') {
 							if app.IsCurrentClusterReadOnly() {
 								SendStatusWithDefaultTTL(
 									"[red]cluster is in read-only mode",
@@ -216,6 +242,7 @@ func (app *App) Topics() {
 							sortTopicsTable(
 								table,
 								topics.Result,
+								size,
 								sortCol,
 								sortDesc,
 								labelColor,
@@ -236,6 +263,29 @@ func (app *App) Topics() {
 							sortTopicsTable(
 								table,
 								topics.Result,
+								size,
+								sortCol,
+								sortDesc,
+								labelColor,
+								hideInternal,
+								app.InternalTopicPatterns,
+							)
+							table.ScrollToBeginning()
+							return event
+						}
+
+						// Sorting by Size only exists while the column does.
+						if IsKey(event, '3') && size.enabled {
+							if sortCol == 3 {
+								sortDesc = !sortDesc
+							} else {
+								sortCol = 3
+								sortDesc = true
+							}
+							sortTopicsTable(
+								table,
+								topics.Result,
+								size,
 								sortCol,
 								sortDesc,
 								labelColor,
@@ -254,6 +304,7 @@ func (app *App) Topics() {
 								filterTopicsTable(
 									table,
 									topics.Result,
+									size,
 									filterText,
 									labelColor,
 									hideInternal,
@@ -263,6 +314,7 @@ func (app *App) Topics() {
 								sortTopicsTable(
 									table,
 									topics.Result,
+									size,
 									sortCol,
 									sortDesc,
 									labelColor,
@@ -282,6 +334,7 @@ func (app *App) Topics() {
 						filterTopicsTable(
 							table,
 							topics.Result,
+							size,
 							text,
 							labelColor,
 							hideInternal,
@@ -290,6 +343,70 @@ func (app *App) Topics() {
 						updateTitle(text)
 						table.ScrollToBeginning()
 					})
+
+					// redraw rebuilds the rows in place, keeping the active filter or sort.
+					redraw := func() {
+						filterText := app.CurrentFilters[pageKey]
+						if filterText != "" {
+							filterTopicsTable(
+								table,
+								topics.Result,
+								size,
+								filterText,
+								labelColor,
+								hideInternal,
+								app.InternalTopicPatterns,
+							)
+						} else {
+							sortTopicsTable(
+								table,
+								topics.Result,
+								size,
+								sortCol,
+								sortDesc,
+								labelColor,
+								hideInternal,
+								app.InternalTopicPatterns,
+							)
+						}
+					}
+
+					// Fill the Size column asynchronously. AllTopicsLogDirSizes issues a single
+					// sharded DescribeLogDirs (one request per broker, not per topic), so broker
+					// load scales with broker count. Results are cached (5-min TTL); Ctrl+U forces
+					// a fresh fetch. The header carries loadingMarker until this settles.
+					if size.loading {
+						go func() {
+							fetchCtx, fetchCancel := context.WithTimeout(
+								context.Background(),
+								app.Config.GetAPICallTimeout(),
+							)
+							defer fetchCancel()
+
+							fetched, err := fc.AllTopicsLogDirSizes(fetchCtx)
+							if err != nil {
+								log.Debug().
+									Err(err).
+									Msg("failed to get topic sizes")
+								app.QueueUpdateDraw(func() {
+									size.loading = false
+									redraw()
+								})
+								return
+							}
+
+							app.QueueUpdateDraw(func() {
+								size.loading = false
+								maps.Copy(size.sizes, fetched)
+								app.Cache.Set(
+									sizesCacheKey,
+									size.sizes,
+									5*time.Minute,
+								)
+								redraw()
+							})
+						}()
+					}
 
 					ClearStatus()
 				})
@@ -328,7 +445,7 @@ func (app *App) Topic(name string) {
 		ok   bool
 	}
 	sizeCh := make(chan topicSizeResult, 1)
-	if fc != nil {
+	if fc != nil && app.Config.TopicSizeEnabled() {
 		go func() {
 			size, err := fc.TopicLogDirSize(ctx, name)
 			if err != nil {
@@ -703,6 +820,32 @@ func (app *App) CreateTopicResultHandler(
 	}()
 }
 
+// topicParamsFromDescription derives the partition count, replication factor, and
+// non-default, non-read-only config entries from a described topic — the settings needed
+// to reproduce it via CreateTopic.
+func topicParamsFromDescription(
+	result *client.TopicResult,
+) (partitions, replicationFactor int, config map[string]string) {
+	config = make(map[string]string)
+	if len(result.TopicDescriptions) > 0 {
+		desc := result.TopicDescriptions[0]
+		partitions = len(desc.Partitions)
+		if len(desc.Partitions) > 0 {
+			replicationFactor = len(desc.Partitions[0].Replicas)
+		}
+	}
+
+	for _, configResult := range result.Config {
+		for _, entry := range configResult.Config {
+			if !entry.IsDefault && !entry.IsReadOnly {
+				config[entry.Name] = entry.Value
+			}
+		}
+	}
+
+	return partitions, replicationFactor, config
+}
+
 // CloneTopic fetches the source topic's description and opens a modal to create
 // a new topic with the same configuration.
 func (app *App) CloneTopic(sourceTopic string) {
@@ -718,24 +861,9 @@ func (app *App) CloneTopic(sourceTopic string) {
 		for {
 			select {
 			case topicResult := <-resultCh:
-				partitionCount := 0
-				replicationFactor := 0
-				if len(topicResult.TopicDescriptions) > 0 {
-					desc := topicResult.TopicDescriptions[0]
-					partitionCount = len(desc.Partitions)
-					if len(desc.Partitions) > 0 {
-						replicationFactor = len(desc.Partitions[0].Replicas)
-					}
-				}
-
-				sourceConfig := make(map[string]string)
-				for _, configResult := range topicResult.Config {
-					for _, entry := range configResult.Config {
-						if !entry.IsDefault && !entry.IsReadOnly {
-							sourceConfig[entry.Name] = entry.Value
-						}
-					}
-				}
+				partitionCount, replicationFactor, sourceConfig := topicParamsFromDescription(
+					topicResult,
+				)
 
 				app.QueueUpdateDraw(func() {
 					app.NewCloneTopicModal(
@@ -1159,7 +1287,141 @@ func (app *App) DeleteTopicResultHandler(name string) {
 	}()
 }
 
-func (app *App) NewTopicsTable(topics *client.TopicsResult) *tview.Table {
+// recreateUITimeout bounds the UI-side wait for a recreate to complete. It must exceed the
+// client's worst case (delete + waiting for the deletion to propagate + create) so a
+// slow-but-successful recreate is not reported as a spurious timeout.
+const recreateUITimeout = 3 * time.Minute
+
+// RecreateTopic fetches the source topic's configuration and opens a confirmation modal to
+// delete the topic and re-create it empty with the same name, partition count, replication
+// factor, and config. All existing messages are lost.
+func (app *App) RecreateTopic(sourceTopic string) {
+	resultCh := make(chan *client.TopicResult)
+	errorCh := make(chan error)
+
+	c := app.GetCurrentKafkaClient()
+	SendStatusInfinite("fetching topic configuration")
+	c.DescribeTopic(sourceTopic, resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		for {
+			select {
+			case topicResult := <-resultCh:
+				partitionCount, replicationFactor, sourceConfig := topicParamsFromDescription(
+					topicResult,
+				)
+
+				app.QueueUpdateDraw(func() {
+					app.NewRecreateTopicModal(
+						sourceTopic,
+						partitionCount,
+						replicationFactor,
+						sourceConfig,
+					)
+					app.ShowModalPage(RecreateTopic)
+					ClearStatus()
+				})
+				cancel()
+				return
+			case err := <-errorCh:
+				log.Error().Err(err).Msg("failed to fetch topic config")
+				SendStatusWithDefaultTTL(
+					fmt.Sprintf("[red]failed to fetch topic config: %s", err.Error()),
+				)
+				cancel()
+				return
+			case <-ctx.Done():
+				log.Error().Msg("timeout while fetching topic config")
+				SendStatusWithDefaultTTL("[red]timeout while fetching topic config")
+				return
+			}
+		}
+	}()
+}
+
+// NewRecreateTopicModal builds a confirmation modal warning that recreating the topic
+// deletes all of its data, then re-creates it with the captured settings on confirm.
+func (app *App) NewRecreateTopicModal(
+	topicName string,
+	partitions int,
+	replicationFactor int,
+	config map[string]string,
+) {
+	messageText := tview.NewTextView().
+		SetText(fmt.Sprintf(
+			"Topic [red::b]%s[-::-] will be deleted and recreated empty (all data lost). Confirm?",
+			topicName,
+		)).
+		SetTextAlign(tview.AlignCenter).
+		SetDynamicColors(true)
+
+	messageText.SetBorder(true).
+		SetTitle(" Confirm Recreation ").
+		SetBorderPadding(0, 0, 1, 1)
+
+	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if IsCtrlEnter(event) {
+			app.RecreateTopicResultHandler(topicName, partitions, replicationFactor, config)
+			app.HideModalPage(RecreateTopic)
+		}
+
+		if event.Key() == tcell.KeyEsc {
+			app.HideModalPage(RecreateTopic)
+		}
+
+		return event
+	})
+
+	modal := util.NewConfirmationModal(messageText)
+	app.Layout.PagesRegistry.UI.Pages.AddPage(RecreateTopic, modal, true, true)
+	app.Layout.PagesRegistry.UI.Pages.ShowPage(RecreateTopic)
+}
+
+// RecreateTopicResultHandler drives the delete-then-create sequence and refreshes the
+// topics list on success.
+func (app *App) RecreateTopicResultHandler(
+	name string,
+	numPartitions int,
+	replicationFactor int,
+	config map[string]string,
+) {
+	// Buffered so the client goroutine never blocks sending its single result even if the
+	// UI-side wait below has already timed out.
+	resultCh := make(chan bool, 1)
+	errorCh := make(chan error, 1)
+
+	c := app.GetCurrentKafkaClient()
+	SendStatusInfinite("recreating topic")
+	c.RecreateTopic(name, numPartitions, replicationFactor, config, resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), recreateUITimeout)
+
+	go func() {
+		for {
+			select {
+			case <-resultCh:
+				SendStatus(fmt.Sprintf("topic '%s' has been recreated", name), 2*time.Second, false)
+				Publish(TopicsChannel, GetTopicsEventType, Payload{nil, true})
+				cancel()
+				return
+			case err := <-errorCh:
+				log.Error().Err(err).Msg("failed to recreate topic")
+				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to recreate topic: %s", err.Error()))
+				cancel()
+				return
+			case <-ctx.Done():
+				log.Error().Msg("timeout while recreating topic")
+				SendStatusWithDefaultTTL("[red]timeout while recreating topic")
+				return
+			}
+		}
+	}()
+}
+
+func (app *App) NewTopicsTable(
+	topics *client.TopicsResult,
+	size sizeColumn,
+) *tview.Table {
 	table := tview.NewTable()
 	table.SetSelectable(true, false).
 		SetBorder(true).
@@ -1174,7 +1436,16 @@ func (app *App) NewTopicsTable(topics *client.TopicsResult) *tview.Table {
 	table.SetFixed(1, 0)
 
 	labelColor := tcell.GetColor(app.Colors.Karat.Label.FgColor)
-	sortTopicsTable(table, topics.Result, 0, false, labelColor, app.HideInternalTopics, app.InternalTopicPatterns)
+	sortTopicsTable(
+		table,
+		topics.Result,
+		size,
+		0,
+		false,
+		labelColor,
+		app.HideInternalTopics,
+		app.InternalTopicPatterns,
+	)
 
 	return table
 }
@@ -1385,15 +1656,64 @@ func (app *App) NewUpdateTopicModal(topicName string, topicResult *client.TopicR
 	app.Layout.PagesRegistry.UI.Pages.AddPage(EditTopic, modal, true, false)
 }
 
-// addTopicsTableHeader adds a fixed header row (row 0) with label-coloured cells.
-func addTopicsTableHeader(table *tview.Table, labelColor tcell.Color) {
-	util.SetTableHeaders(table, labelColor, "Name", "Partitions", "Replication")
+// sizeColumn is the state of the optional Topics "Size" column: whether the feature is
+// enabled (karat.features.topic_size) and the per-topic on-disk sizes, filled
+// asynchronously. When disabled the column is not rendered at all and no DescribeLogDirs
+// request is issued. The sizes map is shared by reference with the fetch goroutine.
+type sizeColumn struct {
+	enabled bool
+
+	// loading is true while the background fetch is in flight, which marks the header. It
+	// is only ever read and written from the UI goroutine.
+	loading bool
+
+	sizes map[string]franz.TopicLogDirSummary
 }
 
-func populateTable(table *tview.Table, row int, t string, partitions, replicas int) {
+// header returns the Size column label, marked while sizes are still being fetched.
+func (c sizeColumn) header() string {
+	if c.loading {
+		return "Size" + loadingMarker
+	}
+	return "Size"
+}
+
+// bytes returns a topic's known on-disk size, or 0 when it has not been reported.
+func (c sizeColumn) bytes(name string) int64 {
+	return c.sizes[name].TotalSizeBytes
+}
+
+// text returns the Size cell text for a topic. It shows "-" when the size has not been
+// fetched yet (topic absent from sizes), and prefixes "~" when the reported size is a known
+// undercount (some replicas did not report their log dir).
+func (c sizeColumn) text(name string) string {
+	s, ok := c.sizes[name]
+	if !ok {
+		return "-"
+	}
+	text := util.FormatBytes(s.TotalSizeBytes)
+	if s.Hint != "" {
+		text = "~" + text
+	}
+	return text
+}
+
+// addTopicsTableHeader adds a fixed header row (row 0) with label-coloured cells.
+func addTopicsTableHeader(table *tview.Table, labelColor tcell.Color, size sizeColumn) {
+	headers := []string{"Name", "Partitions", "Replication"}
+	if size.enabled {
+		headers = append(headers, size.header())
+	}
+	util.SetTableHeaders(table, labelColor, headers...)
+}
+
+func populateTable(table *tview.Table, row int, t string, partitions, replicas int, size sizeColumn) {
 	table.SetCell(row, 0, tview.NewTableCell(t))
 	table.SetCell(row, 1, tview.NewTableCell(strconv.Itoa(partitions)))
 	table.SetCell(row, 2, tview.NewTableCell(strconv.Itoa(replicas)))
+	if size.enabled {
+		table.SetCell(row, 3, tview.NewTableCell(size.text(t)))
+	}
 }
 
 // isInternalTopic reports whether name matches one of the configured internal
@@ -1407,12 +1727,13 @@ func isInternalTopic(name string, patterns []*regexp.Regexp) bool {
 	return false
 }
 
-// sortTopicsTable rebuilds the table sorted by col (0=Name, 1=Partitions).
-// Partitions tiebreaks by Name ascending. Adds ↑/↓ indicator to the active header cell.
+// sortTopicsTable rebuilds the table sorted by col (0=Name, 1=Partitions, 3=Size).
+// Partitions and Size tiebreak by Name ascending. Adds ↑/↓ indicator to the active header cell.
 // If hideInternal is true, internal topics (see isInternalTopic) are omitted.
 func sortTopicsTable(
 	table *tview.Table,
 	metadata map[string]*kafka.TopicMetadata,
+	size sizeColumn,
 	col int,
 	desc bool,
 	labelColor tcell.Color,
@@ -1423,6 +1744,7 @@ func sortTopicsTable(
 		name       string
 		partitions int
 		replicas   int
+		size       int64
 	}
 
 	entries := make([]entry, 0, len(metadata))
@@ -1435,7 +1757,7 @@ func sortTopicsTable(
 		if p > 0 {
 			r = len(meta.Partitions[0].Replicas)
 		}
-		entries = append(entries, entry{name, p, r})
+		entries = append(entries, entry{name, p, r, size.bytes(name)})
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
@@ -1448,6 +1770,14 @@ func sortTopicsTable(
 				return entries[i].partitions < entries[j].partitions
 			}
 			return entries[i].name < entries[j].name
+		case 3:
+			if entries[i].size != entries[j].size {
+				if desc {
+					return entries[i].size > entries[j].size
+				}
+				return entries[i].size < entries[j].size
+			}
+			return entries[i].name < entries[j].name
 		default:
 			if desc {
 				return entries[i].name > entries[j].name
@@ -1457,7 +1787,7 @@ func sortTopicsTable(
 	})
 
 	table.Clear()
-	addTopicsTableHeader(table, labelColor)
+	addTopicsTableHeader(table, labelColor, size)
 
 	indicator := "[↑]"
 	if desc {
@@ -1468,23 +1798,28 @@ func sortTopicsTable(
 		table.GetCell(0, 0).SetText("Name" + indicator)
 	case 1:
 		table.GetCell(0, 1).SetText("Partitions" + indicator)
+	case 3:
+		if size.enabled {
+			table.GetCell(0, 3).SetText(size.header() + indicator)
+		}
 	}
 
 	for i, e := range entries {
-		populateTable(table, i+1, e.name, e.partitions, e.replicas)
+		populateTable(table, i+1, e.name, e.partitions, e.replicas, size)
 	}
 }
 
 func filterTopicsTable(
 	table *tview.Table,
 	metadata map[string]*kafka.TopicMetadata,
+	size sizeColumn,
 	filter string,
 	labelColor tcell.Color,
 	hideInternal bool,
 	internalPatterns []*regexp.Regexp,
 ) {
 	table.Clear()
-	addTopicsTableHeader(table, labelColor)
+	addTopicsTableHeader(table, labelColor, size)
 
 	var topics []string
 	for topicName := range metadata {
@@ -1505,7 +1840,7 @@ func filterTopicsTable(
 				replicas = len(meta.Partitions[0].Replicas)
 			}
 
-			populateTable(table, i+1, topicName, partitions, replicas)
+			populateTable(table, i+1, topicName, partitions, replicas, size)
 		}
 		return
 	}
@@ -1521,7 +1856,7 @@ func filterTopicsTable(
 			replicas = len(meta.Partitions[0].Replicas)
 		}
 
-		populateTable(table, i+1, topicName, partitions, replicas)
+		populateTable(table, i+1, topicName, partitions, replicas, size)
 	}
 }
 

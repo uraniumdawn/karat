@@ -77,3 +77,56 @@ func (c *Client) TopicLogDirSize(ctx context.Context, topic string) (TopicLogDir
 
 	return TopicLogDirSummary{TotalSizeBytes: totalSize, Hint: hint}, nil
 }
+
+// AllTopicsLogDirSizes returns the actual on-disk size of every topic in the cluster.
+//
+// It issues a single sharded DescribeLogDirs request (one request per broker, covering all
+// topics/partitions that broker hosts) rather than one request per topic, so broker load scales
+// with the number of brokers, not the number of topics. Sizes sum across all replicas of all
+// partitions, matching TopicLogDirSize.
+func (c *Client) AllTopicsLogDirSizes(ctx context.Context) (map[string]TopicLogDirSummary, error) {
+	metadata, err := c.Admin.Metadata(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve metadata: %w", err)
+	}
+
+	logDirs, err := c.Admin.DescribeAllLogDirs(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to describe log dirs: %w", err)
+	}
+
+	totals := make(map[string]int64, len(metadata.Topics))
+	reporting := make(map[string]int, len(metadata.Topics))
+	logDirs.Each(func(dir kadm.DescribedLogDir) {
+		if dir.Err != nil {
+			return
+		}
+		dir.Topics.Each(func(p kadm.DescribedLogDirPartition) {
+			totals[p.Topic] += p.Size
+			reporting[p.Topic]++
+		})
+	})
+
+	result := make(map[string]TopicLogDirSummary, len(metadata.Topics))
+	for name, detail := range metadata.Topics {
+		if detail.Err != nil {
+			continue
+		}
+		expectedReplicas := 0
+		for _, p := range detail.Partitions {
+			expectedReplicas += len(p.Replicas)
+		}
+
+		hint := ""
+		if reporting[name] < expectedReplicas {
+			hint = fmt.Sprintf(
+				"size may not be accurate: log dir information from %d of %d replicas is missing",
+				expectedReplicas-reporting[name], expectedReplicas,
+			)
+		}
+
+		result[name] = TopicLogDirSummary{TotalSizeBytes: totals[name], Hint: hint}
+	}
+
+	return result, nil
+}
