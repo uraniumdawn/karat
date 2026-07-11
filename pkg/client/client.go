@@ -245,6 +245,244 @@ func (client *Client) ConsumerGroups(
 	}()
 }
 
+// TopicMessageCount holds a topic's approximate message count.
+type TopicMessageCount struct {
+	// Count is the sum over partitions of (highWatermark - logStartOffset). Because it is an
+	// offset span, it over-counts compacted topics (compaction leaves offset gaps) and topics
+	// with transaction markers; it is exact for plain delete-cleanup, non-transactional topics.
+	Count int64
+
+	// Incomplete is true when one or more partitions did not report offsets, making Count a
+	// possible undercount.
+	Incomplete bool
+}
+
+// TopicMessageCounts estimates the message count of every topic in metadata as the sum over its
+// partitions of (highWatermark - logStartOffset), using leader offsets (so the count is not
+// multiplied by replication factor). It issues two bulk ListOffsets calls — one for the earliest
+// offsets and one for the latest — regardless of topic or partition count.
+//
+// The latest offsets are read with READ_UNCOMMITTED isolation so they are the high watermark (the
+// physical log-end offset), matching how Kafka UIs report message count, rather than the
+// last-stable-offset. Partitions that report an error are skipped and mark the topic Incomplete.
+//
+// Note: on large clusters or when a broker is slow this can be expensive — confluent's ListOffsets
+// is all-or-nothing, so a single slow leader stalls the whole call until the context deadline.
+func (client *Client) TopicMessageCounts(
+	ctx context.Context,
+	metadata map[string]*kafka.TopicMetadata,
+) (map[string]TopicMessageCount, error) {
+	earliest := make(map[kafka.TopicPartition]kafka.OffsetSpec)
+	latest := make(map[kafka.TopicPartition]kafka.OffsetSpec)
+	expected := make(map[string]int, len(metadata))
+	for name, meta := range metadata {
+		expected[name] = len(meta.Partitions)
+		for _, p := range meta.Partitions {
+			topic := name
+			pID := p.ID
+			tp := kafka.TopicPartition{Topic: &topic, Partition: pID}
+			earliest[tp] = kafka.EarliestOffsetSpec
+			latest[tp] = kafka.LatestOffsetSpec
+		}
+	}
+
+	result := make(map[string]TopicMessageCount, len(metadata))
+	if len(latest) == 0 {
+		for name := range metadata {
+			result[name] = TopicMessageCount{}
+		}
+		return result, nil
+	}
+
+	// The earliest and latest lookups are independent, so run them concurrently: wall-clock is
+	// one ListOffsets round trip instead of two sequential ones.
+	var (
+		startRes, endRes kafka.ListOffsetsResult
+		startErr, endErr error
+		wg               sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		startRes, startErr = client.ListOffsets(ctx, earliest,
+			kafka.SetAdminIsolationLevel(kafka.IsolationLevelReadUncommitted))
+	}()
+	go func() {
+		defer wg.Done()
+		endRes, endErr = client.ListOffsets(ctx, latest,
+			kafka.SetAdminIsolationLevel(kafka.IsolationLevelReadUncommitted))
+	}()
+	wg.Wait()
+
+	if startErr != nil {
+		return nil, fmt.Errorf("failed to list start offsets: %w", startErr)
+	}
+	if endErr != nil {
+		return nil, fmt.Errorf("failed to list end offsets: %w", endErr)
+	}
+
+	type span struct {
+		low, high     kafka.Offset
+		lowOK, highOK bool
+	}
+	spans := make(map[TopicPartition]*span)
+	spanFor := func(tp TopicPartition) *span {
+		s := spans[tp]
+		if s == nil {
+			s = &span{}
+			spans[tp] = s
+		}
+		return s
+	}
+	for tp, info := range startRes.ResultInfos {
+		if info.Error.Code() != kafka.ErrNoError {
+			continue
+		}
+		s := spanFor(TopicPartition{*tp.Topic, tp.Partition})
+		s.low, s.lowOK = info.Offset, true
+	}
+	for tp, info := range endRes.ResultInfos {
+		if info.Error.Code() != kafka.ErrNoError {
+			continue
+		}
+		s := spanFor(TopicPartition{*tp.Topic, tp.Partition})
+		s.high, s.highOK = info.Offset, true
+	}
+
+	reported := make(map[string]int, len(metadata))
+	for tp, s := range spans {
+		if !s.lowOK || !s.highOK {
+			continue
+		}
+		mc := result[tp.Topic]
+		mc.Count += int64(s.high - s.low) // high >= low always holds; no clamp needed
+		result[tp.Topic] = mc
+		reported[tp.Topic]++
+	}
+
+	for name := range metadata {
+		mc := result[name]
+		if reported[name] < expected[name] {
+			mc.Incomplete = true
+		}
+		result[name] = mc
+	}
+
+	return result, nil
+}
+
+// ConsumerGroupTotalLags computes the total consumer lag for each group — the sum, over
+// every partition the group has committed an offset for, of (logEndOffset - committedOffset),
+// counting only positive differences.
+//
+// The Kafka protocol allows only a single group per ListConsumerGroupOffsets call, so committed
+// offsets are fetched with one call per group, fanned out with bounded concurrency. Log-end
+// offsets for the union of all partitions are then fetched in a single ListOffsets call, so the
+// broker sees N+1 requests total (N = group count), not N per partition. A group whose offsets
+// cannot be fetched is omitted from the result (rather than reported as zero lag).
+func (client *Client) ConsumerGroupTotalLags(ctx context.Context, groups []string) (map[string]int64, error) {
+	concurrency := client.MaxConcurrency
+	if concurrency <= 0 {
+		concurrency = 8
+	}
+
+	type groupOffsets struct {
+		group   string
+		offsets map[TopicPartition]kafka.Offset
+	}
+
+	sem := make(chan struct{}, concurrency)
+	resultsCh := make(chan groupOffsets, len(groups))
+	var wg sync.WaitGroup
+
+	for _, group := range groups {
+		wg.Add(1)
+		go func(group string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+
+			offsets, err := client.ListConsumerGroupOffsets(
+				ctx,
+				[]kafka.ConsumerGroupTopicPartitions{{Group: group}},
+			)
+			if err != nil {
+				log.Debug().Err(err).Str("group", group).Msg("failed to list consumer group offsets")
+				return
+			}
+
+			committed := make(map[TopicPartition]kafka.Offset)
+			for _, gtp := range offsets.ConsumerGroupsTopicPartitions {
+				for _, tp := range gtp.Partitions {
+					if int64(tp.Offset) < 0 {
+						continue
+					}
+					committed[TopicPartition{*tp.Topic, tp.Partition}] = tp.Offset
+				}
+			}
+			resultsCh <- groupOffsets{group: group, offsets: committed}
+		}(group)
+	}
+
+	wg.Wait()
+	close(resultsCh)
+
+	committedByGroup := make(map[string]map[TopicPartition]kafka.Offset, len(groups))
+	endTPs := make(map[TopicPartition]struct{})
+	for r := range resultsCh {
+		committedByGroup[r.group] = r.offsets
+		for tp := range r.offsets {
+			endTPs[tp] = struct{}{}
+		}
+	}
+
+	end := make(map[TopicPartition]kafka.Offset, len(endTPs))
+	if len(endTPs) > 0 {
+		endSpec := make(map[kafka.TopicPartition]kafka.OffsetSpec, len(endTPs))
+		for tp := range endTPs {
+			topic := tp.Topic
+			endSpec[kafka.TopicPartition{Topic: &topic, Partition: tp.Partition}] = kafka.LatestOffsetSpec
+		}
+
+		res, err := client.ListOffsets(ctx, endSpec,
+			kafka.SetAdminIsolationLevel(kafka.IsolationLevelReadCommitted))
+		if err != nil {
+			return nil, fmt.Errorf("failed to list end offsets: %w", err)
+		}
+		for tp, info := range res.ResultInfos {
+			end[TopicPartition{*tp.Topic, tp.Partition}] = info.Offset
+		}
+	}
+
+	return computeGroupLags(committedByGroup, end), nil
+}
+
+// computeGroupLags sums, per group, the positive difference between each partition's log-end
+// offset and the group's committed offset. Partitions with no known end offset are skipped,
+// and negative differences (committed ahead of end) are clamped to zero.
+func computeGroupLags(
+	committedByGroup map[string]map[TopicPartition]kafka.Offset,
+	end map[TopicPartition]kafka.Offset,
+) map[string]int64 {
+	lags := make(map[string]int64, len(committedByGroup))
+	for group, offsets := range committedByGroup {
+		var total int64
+		for tp, current := range offsets {
+			if endOffset, ok := end[tp]; ok {
+				if d := int64(endOffset - current); d > 0 {
+					total += d
+				}
+			}
+		}
+		lags[group] = total
+	}
+	return lags
+}
+
 // CreateTopic creates a new topic with the given name, partition count, replication
 // factor, and topic-level config overrides.
 func (client *Client) CreateTopic(
@@ -316,6 +554,140 @@ func (client *Client) DeleteTopic(
 
 		resultChan <- true
 	}()
+}
+
+// recreateDeletionTimeout bounds how long RecreateTopic waits for a deleted topic to
+// disappear from cluster metadata before re-creating it. recreateDeletionPollWait is the
+// interval between metadata polls, and recreateCreateAttempts is how many times create is
+// retried while the deleted name is still reserved on the broker.
+const (
+	recreateDeletionTimeout  = 60 * time.Second
+	recreateDeletionPollWait = 500 * time.Millisecond
+	recreateCreateAttempts   = 5
+)
+
+// RecreateTopic deletes the named topic and re-creates it with the same partition count,
+// replication factor, and config. Because Kafka deletion is asynchronous, it waits for the
+// topic to disappear from cluster metadata before re-creating, so the create does not fail
+// with TOPIC_ALREADY_EXISTS. Sending on resultChan/errorChan follows the same one-shot
+// convention as CreateTopic and DeleteTopic.
+func (client *Client) RecreateTopic(
+	name string,
+	numPartitions int,
+	replicationFactor int,
+	config map[string]string,
+	resultChan chan<- bool,
+	errorChan chan<- error,
+) {
+	go func() {
+		if err := client.deleteTopicSync(name); err != nil {
+			errorChan <- err
+			return
+		}
+
+		if err := client.waitForTopicAbsence(name); err != nil {
+			errorChan <- err
+			return
+		}
+
+		if err := client.createTopicWithRetry(name, numPartitions, replicationFactor, config); err != nil {
+			errorChan <- err
+			return
+		}
+
+		resultChan <- true
+	}()
+}
+
+// deleteTopicSync deletes the named topic and blocks until the broker acknowledges the
+// request, returning the first per-topic error if any.
+func (client *Client) deleteTopicSync(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), client.Timeout)
+	defer cancel()
+
+	results, err := client.DeleteTopics(ctx, []string{name}, kafka.SetAdminRequestTimeout(client.Timeout))
+	if err != nil {
+		return err
+	}
+
+	for _, result := range results {
+		if result.Error.Code() != kafka.ErrNoError {
+			return fmt.Errorf("failed to delete topic '%s': %s", name, result.Error.String())
+		}
+	}
+
+	return nil
+}
+
+// waitForTopicAbsence polls cluster metadata until the named topic is no longer present,
+// or until recreateDeletionTimeout elapses.
+func (client *Client) waitForTopicAbsence(name string) error {
+	deadline := time.Now().Add(recreateDeletionTimeout)
+	for {
+		metadata, err := client.GetMetadata(nil, true, int(client.Timeout.Milliseconds()))
+		if err != nil {
+			return fmt.Errorf(
+				"failed to fetch metadata while waiting for topic '%s' deletion: %w",
+				name,
+				err,
+			)
+		}
+
+		if _, exists := metadata.Topics[name]; !exists {
+			return nil
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for topic '%s' to be deleted", name)
+		}
+
+		time.Sleep(recreateDeletionPollWait)
+	}
+}
+
+// createTopicWithRetry creates the topic, retrying briefly while the broker still reports
+// the (just-deleted) name as existing, which can happen when metadata lags the deletion.
+func (client *Client) createTopicWithRetry(
+	name string,
+	numPartitions int,
+	replicationFactor int,
+	config map[string]string,
+) error {
+	ctx, cancel := context.WithTimeout(context.Background(), client.Timeout)
+	defer cancel()
+
+	topicSpec := kafka.TopicSpecification{
+		Topic:             name,
+		NumPartitions:     numPartitions,
+		ReplicationFactor: replicationFactor,
+		Config:            config,
+	}
+
+	for attempt := 1; ; attempt++ {
+		results, err := client.CreateTopics(
+			ctx,
+			[]kafka.TopicSpecification{topicSpec},
+			kafka.SetAdminRequestTimeout(client.Timeout),
+		)
+		if err != nil {
+			return err
+		}
+		if len(results) == 0 {
+			return fmt.Errorf("failed to recreate topic '%s': empty create result", name)
+		}
+
+		result := results[0]
+		code := result.Error.Code()
+		if code == kafka.ErrNoError {
+			return nil
+		}
+		if code == kafka.ErrTopicAlreadyExists && attempt < recreateCreateAttempts {
+			time.Sleep(recreateDeletionPollWait)
+			continue
+		}
+
+		return fmt.Errorf("failed to recreate topic '%s': %s", name, result.Error.String())
+	}
 }
 
 // DeleteConsumerGroup deletes a consumer group.

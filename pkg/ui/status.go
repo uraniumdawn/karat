@@ -12,6 +12,10 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// loadingMarker is appended to a table column header while that column's values are still
+// being fetched in the background (topic sizes, consumer group lags).
+const loadingMarker = "…"
+
 // Status represents a status message with optional time-to-live
 type Status struct {
 	Message string

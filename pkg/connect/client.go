@@ -251,6 +251,52 @@ func (c *Client) StopConnector(name string, resultChan chan<- bool, errorChan ch
 	c.doConnectorAction(name, http.MethodPut, "stop", resultChan, errorChan)
 }
 
+// CreateConnector creates a new connector with the given name and configuration.
+func (c *Client) CreateConnector(
+	name string, config map[string]interface{},
+	resultChan chan<- bool, errorChan chan<- error,
+) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), c.HTTPClient.Timeout)
+		defer cancel()
+
+		body, err := json.Marshal(struct {
+			Name   string                 `json:"name"`
+			Config map[string]interface{} `json:"config"`
+		}{Name: name, Config: config})
+		if err != nil {
+			errorChan <- fmt.Errorf("marshaling config: %w", err)
+			return
+		}
+
+		req, err := http.NewRequestWithContext(
+			ctx, http.MethodPost,
+			c.BaseURL+"/connectors",
+			bytes.NewReader(body),
+		)
+		if err != nil {
+			errorChan <- fmt.Errorf("creating request: %w", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			errorChan <- fmt.Errorf("executing request: %w", err)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusCreated {
+			respBody, _ := io.ReadAll(resp.Body)
+			errorChan <- fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(respBody))
+			return
+		}
+
+		resultChan <- true
+	}()
+}
+
 // DeleteConnector deletes a connector from the Kafka Connect cluster.
 func (c *Client) DeleteConnector(name string, resultChan chan<- bool, errorChan chan<- error) {
 	c.doConnectorAction(name, http.MethodDelete, "", resultChan, errorChan)

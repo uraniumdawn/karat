@@ -10,7 +10,6 @@ import (
 	"os"
 	"time"
 
-	"dario.cat/mergo"
 	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 )
@@ -30,8 +29,42 @@ type Config struct {
 		Connect          []*ConnectConfig        `yaml:"connect,omitempty"`
 		API              ApiConfig               `yaml:"api,omitempty"`
 		UI               UIConfig                `yaml:"ui,omitempty"`
+		Features         FeaturesConfig          `yaml:"features,omitempty"`
 		Style            string                  `yaml:"style,omitempty"`
 	} `yaml:"karat"`
+}
+
+// FeaturesConfig toggles optional features that each cost extra Kafka API calls beyond the
+// data a page already needs. Defaults live in default_config.yaml; set a key to false in your
+// own config to drop both the derived column and its background call.
+//
+// Flags are *bool so that "absent" is distinguishable from "set to false": see
+// optionalBoolTransformer, which is what lets an explicit false override a true default.
+type FeaturesConfig struct {
+	// TopicSize controls the Topics list Size column and the topic description's actual
+	// size, both fed by franz-go DescribeLogDirs.
+	TopicSize *bool `yaml:"topic_size,omitempty"`
+
+	// ConsumerGroupLag controls the Consumer Groups list Lag column, fed by one
+	// ListConsumerGroupOffsets per group plus a single ListOffsets.
+	ConsumerGroupLag *bool `yaml:"consumer_group_lag,omitempty"`
+}
+
+// TopicSizeEnabled reports whether the topic size feature is enabled (default: true).
+func (c *Config) TopicSizeEnabled() bool {
+	return featureEnabled(c.Karat.Features.TopicSize)
+}
+
+// ConsumerGroupLagEnabled reports whether the consumer group lag feature is enabled
+// (default: true).
+func (c *Config) ConsumerGroupLagEnabled() bool {
+	return featureEnabled(c.Karat.Features.ConsumerGroupLag)
+}
+
+// featureEnabled resolves an optional feature flag. A nil flag means neither
+// default_config.yaml nor the user config set it, which falls back to enabled.
+func featureEnabled(flag *bool) bool {
+	return flag == nil || *flag
 }
 
 // ApiConfig holds settings controlling Kafka Admin API calls.
@@ -112,13 +145,6 @@ func (c *ConnectConfig) IsReadOnly() bool {
 // LoadAppConfig loads the application configuration by merging built-in defaults
 // with the user config file. User values take precedence.
 func LoadAppConfig() (*Config, error) {
-	defaults, err := loadDefaultAppConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	defAPI := defaults.Karat.API
-
 	configPath, err := GetConfigPath()
 	if err != nil {
 		return nil, err
@@ -129,18 +155,25 @@ func LoadAppConfig() (*Config, error) {
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
 
-	override := &Config{}
-	if err := yaml.Unmarshal([]byte(os.ExpandEnv(string(data))), override); err != nil {
-		return nil, fmt.Errorf("error unmarshalling config: %w", err)
+	return mergeAppConfig(data)
+}
+
+// mergeAppConfig merges a raw user config (with environment variables expanded) on top of the
+// built-in defaults and validates the result. See mergeYAMLInto for the merge rule.
+func mergeAppConfig(userConfig []byte) (*Config, error) {
+	defaults, err := loadDefaultAppConfig()
+	if err != nil {
+		return nil, err
 	}
 
-	if err := mergo.Merge(defaults, override, mergo.WithOverride); err != nil {
-		return nil, fmt.Errorf("error merging config: %w", err)
+	cfg := &Config{}
+	if err := mergeYAMLInto(defaultConfigData, []byte(os.ExpandEnv(string(userConfig))), cfg); err != nil {
+		return nil, err
 	}
 
-	validateAPIConfig(&defaults.Karat.API, defAPI)
+	validateAPIConfig(&cfg.Karat.API, defaults.Karat.API)
 
-	return defaults, nil
+	return cfg, nil
 }
 
 // validateAPIConfig resets any invalid (<=0) API fields to their defaults and logs a warning.

@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"dario.cat/mergo"
 	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 )
@@ -60,16 +59,12 @@ func loadDefaultColorConfig() (*ColorConfig, error) {
 
 // LoadColorConfig loads color configuration.
 // Loads default_style.yaml as the base. If stylePath is set (karat.style in config.yaml)
-// that file is loaded and merged on top, overriding any fields it defines.
+// that file is loaded and merged on top, overriding any fields it defines and keeping the
+// defaults for the rest (see mergeYAMLInto).
 // Relative stylePath is resolved against the config directory.
 func LoadColorConfig(stylePath string) (*ColorConfig, error) {
-	base, err := loadDefaultColorConfig()
-	if err != nil {
-		return nil, err
-	}
-
 	if stylePath == "" {
-		return base, nil
+		return loadDefaultColorConfig()
 	}
 
 	if strings.HasPrefix(stylePath, "~/") {
@@ -80,20 +75,21 @@ func LoadColorConfig(stylePath string) (*ColorConfig, error) {
 		stylePath = filepath.Join(home, stylePath[2:])
 	}
 
-	override, err := loadColorConfigFromFile(stylePath)
+	override, err := readStyleFile(stylePath)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := mergo.Merge(base, override, mergo.WithOverride); err != nil {
+	cfg := &ColorConfig{}
+	if err := mergeYAMLInto(defaultStyleData, override, cfg); err != nil {
 		log.Error().Err(err).Str("path", stylePath).Msg("error merging style file")
 		return nil, err
 	}
 
-	return base, nil
+	return cfg, nil
 }
 
-func loadColorConfigFromFile(path string) (*ColorConfig, error) {
+func readStyleFile(path string) ([]byte, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, fmt.Errorf("style file not found: %s", path)
 	}
@@ -102,10 +98,5 @@ func loadColorConfigFromFile(path string) (*ColorConfig, error) {
 		log.Error().Err(err).Str("path", path).Msg("error reading style file")
 		return nil, err
 	}
-	cfg := &ColorConfig{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		log.Error().Err(err).Str("path", path).Msg("error unmarshalling style file")
-		return nil, err
-	}
-	return cfg, nil
+	return data, nil
 }

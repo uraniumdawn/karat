@@ -7,6 +7,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,7 +62,7 @@ func (app *App) RunCgroupsEventHandler(ctx context.Context, in chan Event) {
 					if found && !force {
 						app.SwitchToPage(pageName)
 					} else {
-						app.ConsumerGroups()
+						app.ConsumerGroups(force)
 					}
 
 				case GetCgroupEventType:
@@ -109,7 +110,7 @@ func (app *App) RunCgroupsEventHandler(ctx context.Context, in chan Event) {
 					if found && !force {
 						app.SwitchToPage(pageName)
 					} else {
-						app.ConsumerGroupsByTopic(topicName)
+						app.ConsumerGroupsByTopic(topicName, force)
 					}
 				}
 			}
@@ -118,7 +119,7 @@ func (app *App) RunCgroupsEventHandler(ctx context.Context, in chan Event) {
 }
 
 // ConsumerGroups fetches and displays the list of consumer groups.
-func (app *App) ConsumerGroups() {
+func (app *App) ConsumerGroups(force bool) {
 	resultCh := make(chan *client.ConsumerGroupsResult)
 	errorCh := make(chan error)
 
@@ -132,13 +133,14 @@ func (app *App) ConsumerGroups() {
 			select {
 			case groups := <-resultCh:
 				app.QueueUpdateDraw(func() {
-					table := app.NewGroupsTable(groups)
 					pageKey := util.BuildPageKey(app.Selected.Cluster.Name, ConsumerGroups)
+					lags := app.consumerGroupLags(pageKey, force)
+					table := app.NewGroupsTable(groups, lags)
 					title := util.BuildTitle(
 						ConsumerGroups,
 						"["+strconv.Itoa(len(groups.Valid))+"]",
 					)
-					app.setupGroupsTable(table, groups, pageKey, title, func() {
+					app.setupGroupsTable(table, groups, lags, pageKey, title, func() {
 						Publish(CgroupsChannel, GetCgroupsEventType, Payload{nil, true})
 					})
 					ClearStatus()
@@ -162,9 +164,12 @@ func (app *App) ConsumerGroups() {
 }
 
 // setupGroupsTable wires sorting, search, key bindings, and page registration for a consumer groups table.
+// lags carries the Lag column state; its map is filled asynchronously below when the column is
+// marked loading.
 func (app *App) setupGroupsTable(
 	table *tview.Table,
 	groups *client.ConsumerGroupsResult,
+	lags lagColumn,
 	pageKey string,
 	title string,
 	onRefresh func(),
@@ -188,7 +193,9 @@ func (app *App) setupGroupsTable(
 		}
 
 		if IsKey(event, '.') {
-			app.ShowExtraActions(ConsumerGroupsExtraActions, "")
+			row, _ := table.GetSelection()
+			groupName := table.GetCell(row, 0).Text
+			app.ShowExtraActions(ConsumerGroupsExtraActions, groupName)
 		}
 
 		if event.Key() == tcell.KeyCtrlD {
@@ -222,7 +229,7 @@ func (app *App) setupGroupsTable(
 				sortCol = 0
 				sortDesc = false
 			}
-			sortGroupsTable(table, groups.Valid, sortCol, sortDesc, labelColor)
+			sortGroupsTable(table, groups.Valid, lags, sortCol, sortDesc, labelColor)
 			table.ScrollToBeginning()
 			return event
 		}
@@ -234,7 +241,20 @@ func (app *App) setupGroupsTable(
 				sortCol = 1
 				sortDesc = false
 			}
-			sortGroupsTable(table, groups.Valid, sortCol, sortDesc, labelColor)
+			sortGroupsTable(table, groups.Valid, lags, sortCol, sortDesc, labelColor)
+			table.ScrollToBeginning()
+			return event
+		}
+
+		// Sorting by Lag only exists while the column does.
+		if IsKey(event, '3') && lags.enabled {
+			if sortCol == 2 {
+				sortDesc = !sortDesc
+			} else {
+				sortCol = 2
+				sortDesc = true
+			}
+			sortGroupsTable(table, groups.Valid, lags, sortCol, sortDesc, labelColor)
 			table.ScrollToBeginning()
 			return event
 		}
@@ -243,14 +263,81 @@ func (app *App) setupGroupsTable(
 	})
 
 	app.AssignSearch(func(text string) {
-		filterConsumerGroupsTable(table, groups.Valid, text, labelColor)
+		filterConsumerGroupsTable(table, groups.Valid, lags, text, labelColor)
 		util.SetSearchableTableTitle(table, title, text)
 		table.ScrollToBeginning()
 	})
+
+	// redraw rebuilds the rows in place, keeping the active filter or sort.
+	redraw := func() {
+		filterText := app.CurrentFilters[pageKey]
+		if filterText != "" {
+			filterConsumerGroupsTable(table, groups.Valid, lags, filterText, labelColor)
+		} else {
+			sortGroupsTable(table, groups.Valid, lags, sortCol, sortDesc, labelColor)
+		}
+	}
+
+	// Fill the Lag column asynchronously. ConsumerGroupTotalLags issues one
+	// ListConsumerGroupOffsets per group plus a single ListOffsets for all partitions.
+	// Results are cached (5-min TTL); Ctrl+U forces a fresh fetch. The header carries
+	// loadingMarker until this settles.
+	if lags.loading {
+		names := make([]string, 0, len(groups.Valid))
+		for _, g := range groups.Valid {
+			names = append(names, g.GroupID)
+		}
+
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+			defer cancel()
+
+			fetched, err := app.GetCurrentKafkaClient().ConsumerGroupTotalLags(ctx, names)
+			if err != nil {
+				log.Debug().Err(err).Msg("failed to get consumer group lags")
+				app.QueueUpdateDraw(func() {
+					lags.loading = false
+					redraw()
+				})
+				return
+			}
+
+			app.QueueUpdateDraw(func() {
+				lags.loading = false
+				maps.Copy(lags.lags, fetched)
+				app.Cache.Set(pageKey+":lags", lags.lags, 5*time.Minute)
+				redraw()
+			})
+		}()
+	}
+}
+
+// consumerGroupLags returns the Lag column state for a consumer-groups page. On a cache hit
+// (column enabled and not forced) the cached lags are reused as-is; otherwise the column is
+// marked loading, which both marks the header and tells setupGroupsTable to fetch the lags
+// asynchronously.
+func (app *App) consumerGroupLags(pageKey string, force bool) lagColumn {
+	lags := lagColumn{
+		enabled: app.Config.ConsumerGroupLagEnabled(),
+		lags:    map[string]int64{},
+	}
+	if !lags.enabled {
+		return lags
+	}
+	if !force {
+		if cachedVal, ok := app.Cache.Get(pageKey + ":lags"); ok {
+			if m, ok := cachedVal.(map[string]int64); ok {
+				lags.lags = m
+				return lags
+			}
+		}
+	}
+	lags.loading = true
+	return lags
 }
 
 // ConsumerGroupsByTopic fetches and displays consumer groups that have committed offsets for the given topic.
-func (app *App) ConsumerGroupsByTopic(topicName string) {
+func (app *App) ConsumerGroupsByTopic(topicName string, force bool) {
 	resultCh := make(chan *client.ConsumerGroupsResult)
 	errorCh := make(chan error)
 
@@ -264,19 +351,20 @@ func (app *App) ConsumerGroupsByTopic(topicName string) {
 			select {
 			case groups := <-resultCh:
 				app.QueueUpdateDraw(func() {
-					table := app.NewGroupsTable(groups)
 					pageKey := util.BuildPageKey(
 						app.Selected.Cluster.Name,
 						ConsumerGroups,
 						"topic",
 						topicName,
 					)
+					lags := app.consumerGroupLags(pageKey, force)
+					table := app.NewGroupsTable(groups, lags)
 					title := fmt.Sprintf(
 						" consumer groups [%s][%d] ",
 						topicName,
 						len(groups.Valid),
 					)
-					app.setupGroupsTable(table, groups, pageKey, title, func() {
+					app.setupGroupsTable(table, groups, lags, pageKey, title, func() {
 						Publish(
 							CgroupsChannel,
 							FindCgroupsByTopicEventType,
@@ -418,18 +506,6 @@ func (app *App) ConsumerGroup(name string) {
 										Force: false,
 									},
 								)
-							}
-
-							if IsKey(event, 'c') {
-								if app.IsCurrentClusterReadOnly() {
-									SendStatusWithDefaultTTL(
-										"[red]cluster is in read-only mode",
-									)
-									return event
-								}
-								app.CopyConsumerGroupModal(name)
-								app.ShowModalPage(CopyConsumerGroup)
-								return nil
 							}
 
 							return event
@@ -1257,16 +1333,57 @@ func (app *App) CopyConsumerGroupOffsetsBatchResultHandler(sourceGroup, targetGr
 	}()
 }
 
-// addGroupsTableHeader adds a fixed header row (row 0) with label-coloured cells.
-func addGroupsTableHeader(table *tview.Table, labelColor tcell.Color) {
-	util.SetTableHeaders(table, labelColor, "Name", "State")
+// lagColumn is the state of the optional Consumer Groups "Lag" column: whether the feature
+// is enabled (karat.features.consumer_group_lag) and the per-group total lags, filled
+// asynchronously. When disabled the column is not rendered at all and no offset lookups are
+// issued. The lags map is shared by reference with the fetch goroutine.
+type lagColumn struct {
+	enabled bool
+
+	// loading is true while the background fetch is in flight, which marks the header. It
+	// is only ever read and written from the UI goroutine.
+	loading bool
+
+	lags map[string]int64
 }
 
-// sortGroupsTable rebuilds the table sorted by col (0=Name, 1=State).
-// State tiebreaks by Name ascending. Adds ↑/↓ indicator to the active header cell.
+// header returns the Lag column label, marked while lags are still being fetched.
+func (c lagColumn) header() string {
+	if c.loading {
+		return "Lag" + loadingMarker
+	}
+	return "Lag"
+}
+
+// value returns a group's known total lag, or 0 when it has not been reported.
+func (c lagColumn) value(name string) int64 {
+	return c.lags[name]
+}
+
+// text returns the Lag cell text for a group. It shows "-" when the lag has not been fetched
+// yet (group absent from lags), otherwise the total lag as a plain integer.
+func (c lagColumn) text(name string) string {
+	if v, ok := c.lags[name]; ok {
+		return strconv.FormatInt(v, 10)
+	}
+	return "-"
+}
+
+// addGroupsTableHeader adds a fixed header row (row 0) with label-coloured cells.
+func addGroupsTableHeader(table *tview.Table, labelColor tcell.Color, lags lagColumn) {
+	headers := []string{"Name", "State"}
+	if lags.enabled {
+		headers = append(headers, lags.header())
+	}
+	util.SetTableHeaders(table, labelColor, headers...)
+}
+
+// sortGroupsTable rebuilds the table sorted by col (0=Name, 1=State, 2=Lag).
+// State and Lag tiebreak by Name ascending. Adds ↑/↓ indicator to the active header cell.
 func sortGroupsTable(
 	table *tview.Table,
 	listing []kafka.ConsumerGroupListing,
+	lags lagColumn,
 	col int,
 	desc bool,
 	labelColor tcell.Color,
@@ -1285,6 +1402,15 @@ func sortGroupsTable(
 				return si < sj
 			}
 			return entries[i].GroupID < entries[j].GroupID
+		case 2:
+			li, lj := lags.value(entries[i].GroupID), lags.value(entries[j].GroupID)
+			if li != lj {
+				if desc {
+					return li > lj
+				}
+				return li < lj
+			}
+			return entries[i].GroupID < entries[j].GroupID
 		default:
 			if desc {
 				return entries[i].GroupID > entries[j].GroupID
@@ -1294,7 +1420,7 @@ func sortGroupsTable(
 	})
 
 	table.Clear()
-	addGroupsTableHeader(table, labelColor)
+	addGroupsTableHeader(table, labelColor, lags)
 
 	indicator := "[↑]"
 	if desc {
@@ -1305,16 +1431,23 @@ func sortGroupsTable(
 		table.GetCell(0, 0).SetText("Name" + indicator)
 	case 1:
 		table.GetCell(0, 1).SetText("State" + indicator)
+	case 2:
+		if lags.enabled {
+			table.GetCell(0, 2).SetText(lags.header() + indicator)
+		}
 	}
 
 	for i, r := range entries {
 		table.SetCell(i+1, 0, tview.NewTableCell(r.GroupID))
 		table.SetCell(i+1, 1, tview.NewTableCell(r.State.String()))
+		if lags.enabled {
+			table.SetCell(i+1, 2, tview.NewTableCell(lags.text(r.GroupID)))
+		}
 	}
 }
 
 // NewGroupsTable creates a table displaying consumer groups.
-func (app *App) NewGroupsTable(groups *client.ConsumerGroupsResult) *tview.Table {
+func (app *App) NewGroupsTable(groups *client.ConsumerGroupsResult, lags lagColumn) *tview.Table {
 	table := tview.NewTable()
 	table.SetSelectable(true, false).
 		SetBorder(true).
@@ -1329,7 +1462,7 @@ func (app *App) NewGroupsTable(groups *client.ConsumerGroupsResult) *tview.Table
 	table.SetFixed(1, 0)
 
 	labelColor := tcell.GetColor(app.Colors.Karat.Label.FgColor)
-	sortGroupsTable(table, groups.Valid, 0, false, labelColor)
+	sortGroupsTable(table, groups.Valid, lags, 0, false, labelColor)
 
 	return table
 }
@@ -1337,11 +1470,12 @@ func (app *App) NewGroupsTable(groups *client.ConsumerGroupsResult) *tview.Table
 func filterConsumerGroupsTable(
 	table *tview.Table,
 	groupListing []kafka.ConsumerGroupListing,
+	lags lagColumn,
 	filter string,
 	labelColor tcell.Color,
 ) {
 	table.Clear()
-	addGroupsTableHeader(table, labelColor)
+	addGroupsTableHeader(table, labelColor, lags)
 
 	var groups []string
 	for _, g := range groupListing {
@@ -1358,6 +1492,9 @@ func filterConsumerGroupsTable(
 				if g.GroupID == groupID {
 					table.SetCell(row, 0, tview.NewTableCell(g.GroupID))
 					table.SetCell(row, 1, tview.NewTableCell(g.State.String()))
+					if lags.enabled {
+						table.SetCell(row, 2, tview.NewTableCell(lags.text(g.GroupID)))
+					}
 					row++
 					break
 				}
@@ -1376,6 +1513,9 @@ func filterConsumerGroupsTable(
 			1,
 			tview.NewTableCell(groupListing[match.Index].State.String()),
 		)
+		if lags.enabled {
+			table.SetCell(row, 2, tview.NewTableCell(lags.text(match.Str)))
+		}
 		row++
 	}
 }

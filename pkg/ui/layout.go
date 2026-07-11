@@ -54,7 +54,12 @@ const (
 	searchHeight   = 3
 )
 
-func NewLayout(registry *PagesRegistry, colors *config.ColorConfig, hasSchemaRegistry, hasConnect bool) *Layout {
+func NewLayout(
+	registry *PagesRegistry,
+	colors *config.ColorConfig,
+	cfg *config.Config,
+	hasSchemaRegistry, hasConnect bool,
+) *Layout {
 	InitBorders()
 
 	cluster := tview.NewTable()
@@ -97,7 +102,7 @@ func NewLayout(registry *PagesRegistry, colors *config.ColorConfig, hasSchemaReg
 			SetExpansion(1))
 	}
 
-	menu := NewMenu(colors)
+	menu := NewMenu(colors, cfg)
 	header := tview.NewFlex()
 	header.SetDirection(tview.FlexColumn)
 

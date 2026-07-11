@@ -37,6 +37,7 @@ A powerful Terminal UI (TUI) for Apache Kafka that provides an intuitive, keyboa
 - **Page History Navigation** - Forward/backward navigation through opened pages with dynamic menu keybindings
 - **Inline Search & Filtering** - Fuzzy search across topics, consumer groups, subjects, connectors, transactions, and ACLs
 - **Column Sorting** - Sort table views by any column with ascending/descending toggle
+- **Background Columns** - Topic on-disk size and consumer-group total lag are filled in after the list renders (header shows `…` while loading); each can be switched off via `karat.features`
 - **In-Memory Cache** - 5-minute TTL cache per resource; force-refresh any view with `Ctrl+U`
 - **Update Notifications** - Checks GitHub for newer releases on startup and shows an update hint in the status bar
 
@@ -127,6 +128,11 @@ karat:
   api:
     timeout: 30       # API call timeout in seconds (default: 30)
     max_concurrency: 10  # Max parallel Kafka API calls, e.g. for consumer group offset queries (default: 10)
+
+  # Optional features (optional) — each needs extra Kafka requests; all default to true
+  features:
+    topic_size: true          # Topics list "Size" column + topic description actual size
+    consumer_group_lag: true  # Consumer Groups list "Lag" column
 
   # UI Configuration (optional)
   ui:
@@ -227,16 +233,24 @@ sasl.password: ${KAFKA_PASSWORD}
 - Selection is persisted when changed via UI
 
 **Default configuration:**
-- Karat has built-in defaults for the `api` section (embedded in the binary)
-- Your `config.yaml` is merged on top — only the values you specify override the defaults
-- Mirrors the same pattern as the built-in style defaults
+- Karat has built-in defaults for the `api`, `features`, and `ui` sections (embedded in the binary)
+- Your `config.yaml` is merged on top — only the keys you specify override the defaults, and every key you leave out keeps its default
+- Whatever you set is applied, including `false`, `0`, `""`, and empty lists
+- Sections merge key by key: overriding `karat.features.topic_size` leaves the other feature flags at their defaults
+- Lists replace the default list entirely instead of extending it
+- Style files follow exactly the same rules on top of the built-in style defaults
 
 **API settings (`api:`):**
 - `timeout` — timeout in seconds for all Kafka Admin API calls (cluster describe, topic operations, consumer group queries). Default: 30
-- `max_concurrency` — maximum number of parallel Kafka API calls, used when querying consumer group offsets across many groups. Default: 10
+- `max_concurrency` — maximum number of parallel Kafka API calls, used when querying consumer group offsets across many groups (find-by-topic and the Consumer Groups lag column). Default: 10
+
+**Feature settings (`features:`):**
+Each flag controls a column that needs extra Kafka requests to fill. Both default to `true`; set one to `false` to hide the column, drop its `3` sort key, and stop those requests — useful on large or slow clusters. These columns are filled in the background: the header shows a trailing `…` (`Size…`, `Lag…`) while the values are still being fetched, and cells show `-` until they arrive.
+- `topic_size` — Topics list `Size` column and the topic description's actual size. Default: `true`
+- `consumer_group_lag` — Consumer Groups list `Lag` column, on both the Consumer Groups list and the find-by-topic view. Default: `true`
 
 **UI settings (`ui:`):**
-- `internal_topic_patterns` — list of regular expressions used to classify topics as internal when hiding internal topics (`i` on the Topics page). Replaces the built-in defaults (`^__.*`, `.*-changelog$`, `.*-repartition$`) entirely if set.
+- `internal_topic_patterns` — list of regular expressions used to classify topics as internal when hiding internal topics (`i` on the Topics page). Replaces the built-in defaults (`^__.*`, `.*-changelog$`, `.*-repartition$`) entirely if set; set it to `[]` to treat no topic as internal.
 
 **Read-only mode:**
 - Set `mode: read-only` on a cluster or Kafka Connect instance to prevent any write operations (create, edit, delete, actions) via the UI
@@ -327,8 +341,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **[zerolog](https://github.com/rs/zerolog)** - Fast, structured logging
 
 **Inspiration:**
-- `k9s` - Kubernetes terminal UI
-- `lazydocker` - Docker terminal UI
+- [k9s](https://github.com/derailed/k9s) - Kubernetes terminal UI
+- [lazydocker](https://github.com/jesseduffield/lazydocker) - Docker terminal UI
+- [Redpanda Console](https://github.com/redpanda-data/console) - Kafka web UI; inspired the topic on-disk size and connector health views
 
 
 

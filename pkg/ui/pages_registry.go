@@ -121,6 +121,7 @@ func (pr *PagesRegistry) SetupPageMenus() {
 	pr.PageMenuMap[OpenedPages] = OpenedPagesMenu
 	pr.PageMenuMap[CreateTopic] = CreateTopicPageMenu
 	pr.PageMenuMap[DeleteTopic] = DeleteTopicPageMenu
+	pr.PageMenuMap[RecreateTopic] = RecreateTopicPageMenu
 	pr.PageMenuMap[DeleteConsumerGroup] = DeleteConsumerGroupPageMenu
 	pr.PageMenuMap[EditTopic] = EditTopicPageMenu
 	pr.PageMenuMap[ResetOffset] = ResetOffsetPageMenu
@@ -131,6 +132,7 @@ func (pr *PagesRegistry) SetupPageMenus() {
 	pr.PageMenuMap[DeleteConnector] = DeleteConnectorPageMenu
 	pr.PageMenuMap[DeleteConnectorOffsets] = DeleteConnectorOffsetsPageMenu
 	pr.PageMenuMap[CopyConnectorOffsets] = CopyConnectorOffsetsPageMenu
+	pr.PageMenuMap[CreateConnector] = CreateConnectorPageMenu
 	pr.PageMenuMap[CliTemplates] = CliTemplatesPageMenu
 	pr.PageMenuMap[FindBy] = FindByPageMenu
 	pr.PageMenuMap[FindSchemaByID] = FindSchemaByIDPageMenu
@@ -158,35 +160,16 @@ func (app *App) AddToPagesRegistry(
 	registry := app.Layout.PagesRegistry
 	registry.PageMenuMap[name] = menu
 
-	existingRow := registry.findPageInTable(name)
 	currentPage, _ := registry.UI.Pages.GetFrontPage()
-	currentRow := registry.findPageInTable(currentPage)
-	if currentRow < 0 {
-		currentRow = registry.UI.OpenedPages.GetRowCount() - 1
-	}
+	names := registry.openedPageNames()
 
-	if existingRow >= 0 {
+	// A re-opened page must be removed from Pages before it can be re-added below.
+	if indexOfString(names, name) >= 0 {
 		registry.UI.Pages.RemovePage(name)
-		registry.UI.OpenedPages.RemoveRow(existingRow)
-		if existingRow < currentRow {
-			currentRow--
-		}
 	}
 
-	insertRow := currentRow + 1
-	rowCount := registry.UI.OpenedPages.GetRowCount()
-	if insertRow > rowCount {
-		insertRow = rowCount
-	}
-
-	registry.UI.OpenedPages.InsertRow(insertRow)
-	registry.UI.OpenedPages.SetCell(insertRow, 0, tview.NewTableCell(strconv.Itoa(insertRow)))
-	registry.UI.OpenedPages.SetCell(insertRow, 1, tview.NewTableCell(name))
-	registry.UI.OpenedPages.Select(insertRow, 0)
-
-	for i := insertRow + 1; i < registry.UI.OpenedPages.GetRowCount(); i++ {
-		registry.UI.OpenedPages.SetCell(i, 0, tview.NewTableCell(strconv.Itoa(i)))
-	}
+	order, selectedRow := planOpenedPages(names, currentPage, name)
+	registry.rebuildOpenedPages(order, selectedRow)
 
 	if searchable && !registry.isPageSearchable(name) {
 		registry.SearchablePages = append(registry.SearchablePages, name)
@@ -216,6 +199,78 @@ func (pr *PagesRegistry) findPageInTable(name string) int {
 	for i := 0; i < pr.UI.OpenedPages.GetRowCount(); i++ {
 		cell := pr.UI.OpenedPages.GetCell(i, 1)
 		if cell != nil && cell.Text == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// openedPageNames returns the page names in their current registry order.
+func (pr *PagesRegistry) openedPageNames() []string {
+	n := pr.UI.OpenedPages.GetRowCount()
+	names := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		if cell := pr.UI.OpenedPages.GetCell(i, 1); cell != nil {
+			names = append(names, cell.Text)
+		}
+	}
+	return names
+}
+
+// rebuildOpenedPages repopulates the OpenedPages table from the given ordered page
+// names, renumbering the display-index column, and selects selectedRow.
+func (pr *PagesRegistry) rebuildOpenedPages(order []string, selectedRow int) {
+	pr.UI.OpenedPages.Clear()
+	for i, name := range order {
+		pr.UI.OpenedPages.SetCell(i, 0, tview.NewTableCell(strconv.Itoa(i)))
+		pr.UI.OpenedPages.SetCell(i, 1, tview.NewTableCell(name))
+	}
+	if selectedRow >= 0 && selectedRow < len(order) {
+		pr.UI.OpenedPages.Select(selectedRow, 0)
+	}
+}
+
+// planOpenedPages computes the opened-pages order after a page named `name` is
+// opened while `current` is the front page. It returns the reordered page names
+// and the index at which `name` is placed.
+//
+// A newly opened page is inserted immediately after the current page, so pressing
+// 'h' (Backward) returns to the page that opened it. Re-opening an existing page
+// removes it first, then places it after the current page. If `current` is not among
+// `names` (e.g. a modal is in front), the page is appended at the end.
+func planOpenedPages(names []string, current, name string) ([]string, int) {
+	existingRow := indexOfString(names, name)
+	currentRow := indexOfString(names, current)
+	if currentRow < 0 {
+		currentRow = len(names) - 1
+	}
+
+	remaining := names
+	if existingRow >= 0 {
+		remaining = make([]string, 0, len(names)-1)
+		remaining = append(remaining, names[:existingRow]...)
+		remaining = append(remaining, names[existingRow+1:]...)
+		if existingRow < currentRow {
+			currentRow--
+		}
+	}
+
+	insertRow := currentRow + 1
+	if insertRow > len(remaining) {
+		insertRow = len(remaining)
+	}
+
+	order := make([]string, 0, len(remaining)+1)
+	order = append(order, remaining[:insertRow]...)
+	order = append(order, name)
+	order = append(order, remaining[insertRow:]...)
+	return order, insertRow
+}
+
+// indexOfString returns the index of target in s, or -1 if absent.
+func indexOfString(s []string, target string) int {
+	for i, v := range s {
+		if v == target {
 			return i
 		}
 	}

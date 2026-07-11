@@ -412,35 +412,36 @@ func (app *App) NewVersionsTable(versions []int) *tview.Table {
 	return table
 }
 
-// CloneSubjectResult holds the source subject's schema and compatibility level.
+// CloneSubjectResult holds the source subject's schema history and compatibility level.
 type CloneSubjectResult struct {
-	Schema        sr.SchemaInfo
+	Schemas       []sr.SchemaInfo
 	Compatibility sr.Compatibility
 }
 
-// CloneSubject fetches the source subject's latest schema and config, then opens
-// a modal to register the same schema under a new subject name.
+// CloneSubject fetches all schema versions and config for the source subject, then opens
+// a modal to register the full history under a new subject name.
 func (app *App) CloneSubject(sourceSubject string) {
-	schemaCh := make(chan schemaregistry.SchemaResult)
+	versionsCh := make(chan []int)
 	configCh := make(chan sr.ServerConfig)
 	errorCh := make(chan error, 2)
 
 	c := app.GetCurrentSchemaRegistryClient()
 	SendStatusInfinite("fetching subject schema")
-	c.LatestSchema(sourceSubject, schemaCh, errorCh)
+	c.VersionsBySubject(sourceSubject, versionsCh, errorCh)
 	c.SubjectConfig(sourceSubject, configCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
 	go func() {
-		var result CloneSubjectResult
+		var versions []int
+		var compatibility sr.Compatibility
 		received := 0
 		for received < 2 {
 			select {
-			case schema := <-schemaCh:
-				result.Schema = schema.Metadata.SchemaInfo
+			case v := <-versionsCh:
+				versions = v
 				received++
 			case cfg := <-configCh:
-				result.Compatibility = cfg.CompatibilityLevel
+				compatibility = cfg.CompatibilityLevel
 				received++
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to fetch subject info")
@@ -456,6 +457,32 @@ func (app *App) CloneSubject(sourceSubject string) {
 			}
 		}
 
+		// VersionsBySubject returns versions in descending order; register oldest first.
+		sort.Ints(versions)
+
+		schemas := make([]sr.SchemaInfo, 0, len(versions))
+		for _, version := range versions {
+			schemaCh := make(chan schemaregistry.SchemaResult)
+			schemaErrCh := make(chan error, 1)
+			c.Schema(sourceSubject, version, schemaCh, schemaErrCh)
+			select {
+			case s := <-schemaCh:
+				schemas = append(schemas, s.Metadata.SchemaInfo)
+			case err := <-schemaErrCh:
+				log.Error().Err(err).Int("version", version).Msg("failed to fetch schema version")
+				SendStatusWithDefaultTTL(
+					fmt.Sprintf("[red]failed to fetch schema version %d: %s", version, err.Error()),
+				)
+				cancel()
+				return
+			case <-ctx.Done():
+				log.Error().Msg("timeout while fetching schema versions")
+				SendStatusWithDefaultTTL("[red]timeout while fetching schema versions")
+				return
+			}
+		}
+
+		result := CloneSubjectResult{Schemas: schemas, Compatibility: compatibility}
 		app.QueueUpdateDraw(func() {
 			app.NewCloneSubjectModal(sourceSubject, &result)
 			app.ShowModalPage(CloneSubject)
@@ -558,7 +585,7 @@ func (app *App) NewCloneSubjectModal(sourceSubject string, result *CloneSubjectR
 			}
 			app.CloneSubjectResultHandler(
 				subjectName,
-				result.Schema,
+				result.Schemas,
 				result.Compatibility,
 			)
 			app.HideModalPage(CloneSubject)
@@ -584,69 +611,31 @@ func (app *App) NewCloneSubjectModal(sourceSubject string, result *CloneSubjectR
 	app.Layout.Menu.SetMenu(CloneSubjectInputMenu)
 }
 
-// CloneSubjectResultHandler registers the schema under the new subject and copies
-// the compatibility level from the source.
+// CloneSubjectResultHandler registers all schema versions under the new subject in
+// ascending order, then copies the compatibility level from the source.
 func (app *App) CloneSubjectResultHandler(
 	subject string,
-	schema sr.SchemaInfo,
+	schemas []sr.SchemaInfo,
 	compatibility sr.Compatibility,
 ) {
-	resultCh := make(chan int)
-	errorCh := make(chan error)
-
 	c := app.GetCurrentSchemaRegistryClient()
-	SendStatusInfinite("registering schema")
-	c.RegisterSchema(subject, schema, resultCh, errorCh)
+	SendStatusInfinite("registering schemas")
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
 	go func() {
-		for {
+		defer cancel()
+
+		for i, schema := range schemas {
+			resultCh := make(chan int)
+			errorCh := make(chan error, 1)
+			c.RegisterSchema(subject, schema, resultCh, errorCh)
 			select {
 			case <-resultCh:
-				configResultCh := make(chan sr.ServerConfig)
-				configErrorCh := make(chan error)
-				c.UpdateSubjectConfig(
-					subject,
-					sr.ServerConfig{CompatibilityUpdate: compatibility},
-					configResultCh,
-					configErrorCh,
-				)
-				configCtx, configCancel := context.WithTimeout(
-					context.Background(),
-					app.Config.GetAPICallTimeout(),
-				)
-				select {
-				case <-configResultCh:
-				case err := <-configErrorCh:
-					log.Error().Err(err).Msg("failed to set subject compatibility")
-					SendStatusWithDefaultTTL(
-						fmt.Sprintf(
-							"[red]subject created but failed to set compatibility: %s",
-							err.Error(),
-						),
-					)
-				case <-configCtx.Done():
-					log.Error().Msg("timeout while setting subject compatibility")
-					SendStatusWithDefaultTTL(
-						"[red]subject created but timeout setting compatibility",
-					)
-				}
-				configCancel()
-
-				SendStatus(
-					fmt.Sprintf("subject '%s' has been created", subject),
-					2*time.Second,
-					false,
-				)
-				Publish(SubjectsChannel, GetSubjectsEventType, Payload{nil, true})
-				cancel()
-				return
 			case err := <-errorCh:
-				log.Error().Err(err).Msg("failed to register schema")
+				log.Error().Err(err).Int("version_index", i).Msg("failed to register schema")
 				SendStatusWithDefaultTTL(
-					fmt.Sprintf("[red]failed to register schema: %s", err.Error()),
+					fmt.Sprintf("[red]failed to register schema version %d: %s", i+1, err.Error()),
 				)
-				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while registering schema")
@@ -654,6 +643,41 @@ func (app *App) CloneSubjectResultHandler(
 				return
 			}
 		}
+
+		configResultCh := make(chan sr.ServerConfig)
+		configErrorCh := make(chan error, 1)
+		c.UpdateSubjectConfig(
+			subject,
+			sr.ServerConfig{CompatibilityUpdate: compatibility},
+			configResultCh,
+			configErrorCh,
+		)
+		configCtx, configCancel := context.WithTimeout(
+			context.Background(),
+			app.Config.GetAPICallTimeout(),
+		)
+		defer configCancel()
+		select {
+		case <-configResultCh:
+		case err := <-configErrorCh:
+			log.Error().Err(err).Msg("failed to set subject compatibility")
+			SendStatusWithDefaultTTL(
+				fmt.Sprintf(
+					"[red]subject created but failed to set compatibility: %s",
+					err.Error(),
+				),
+			)
+		case <-configCtx.Done():
+			log.Error().Msg("timeout while setting subject compatibility")
+			SendStatusWithDefaultTTL("[red]subject created but timeout setting compatibility")
+		}
+
+		SendStatus(
+			fmt.Sprintf("subject '%s' has been created (%d versions)", subject, len(schemas)),
+			2*time.Second,
+			false,
+		)
+		Publish(SubjectsChannel, GetSubjectsEventType, Payload{nil, true})
 	}()
 }
 
