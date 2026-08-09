@@ -160,8 +160,6 @@ func (app *App) Topics(force bool) {
 						"["+strconv.Itoa(len(topics.Result))+"]")
 					app.AddToPagesRegistry(pageKey, table, TopicsPageMenu, true)
 
-					// app.InitConsumingParams()
-
 					sortCol := 0
 					sortDesc := false
 					hideInternal := app.HideInternalTopics
@@ -224,6 +222,12 @@ func (app *App) Topics(force bool) {
 							row, _ := table.GetSelection()
 							topicName := table.GetCell(row, 0).Text
 							app.UpdateTopic(topicName)
+						}
+
+						if IsKey(event, 'c') {
+							row, _ := table.GetSelection()
+							topicName := table.GetCell(row, 0).Text
+							app.ConsumeWithLastParams(topicName)
 						}
 
 						if IsKey(event, '.') {

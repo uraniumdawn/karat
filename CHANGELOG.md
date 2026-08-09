@@ -4,7 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [Unreleased]
+## [0.2.9] - 2026-08-09
+
+## Features
+
+* **Consume with one key** (`c` on the Topics list): starts consuming the selected topic immediately, with the parameters last used on it — no modal, no retyping. A topic that has never been consumed on the cluster falls back to the built-in defaults (`-o 100 [-r <sr>] -f '{…}'`). The parameters that ran are echoed in the status bar; a parse or schema-registry error is reported as usual and nothing starts.
+* **Consume parameters history**: every parameter string that actually started a consume is remembered per cluster and topic in `~/.config/karat/history.yaml` (`KARAT_CONFIG_DIR` honoured), newest first, capped at 30 entries and de-duplicated. `Ctrl+R` in the Consume parameters modal opens a picker — the current topic's entries first, then the rest of the cluster's — where `Enter` fills the parameters in and `Ctrl+Enter` runs them straight away. The modal itself now opens prefilled with the topic's last-used parameters instead of the defaults. A missing or malformed history file is not an error: it simply starts empty.
+
+## Enhancements
+
+* **Consumer groups by topic from the Topics pages**: `.` → "Consumer groups" on the Topics list and the Topic description now opens the consumer groups that read the selected topic. Same page as the Consumer Groups list's "Find by topic", with the full consumer-groups functionality behind it (describe, delete, sort, search, `Ctrl+U` refresh, clone), without having to retype the topic name into a modal.
+* **Edit consume parameters in `$EDITOR`** (`Ctrl+O` on the Consume parameters modal): hands the current parameters to `$EDITOR` (vim when unset), with the full flag reference — the same one `F1` shows — inlined below them as `#` comments, so the flags stay at hand while editing. Comment lines are dropped when the editor exits and the edited parameters go back into the modal. Uses the same suspend-the-TUI mechanism as the connector config editor.
 
 ---
 
@@ -131,7 +141,9 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-[Unreleased]: https://github.com/uraniumdawn/karat/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/uraniumdawn/karat/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/uraniumdawn/karat/compare/v0.2.8...v0.2.9
+[0.2.8]: https://github.com/uraniumdawn/karat/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/uraniumdawn/karat/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/uraniumdawn/karat/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/uraniumdawn/karat/compare/v0.2.4...v0.2.5

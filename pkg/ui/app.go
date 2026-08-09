@@ -75,6 +75,7 @@ const (
 	ConsumeOutput          = "Consume Output"
 	ConsumeParams          = "Consume Params"
 	ConsumeHelp            = "Consume Help"
+	ConsumeHistory         = "Consume History"
 	ConsumeStats           = "Consume Stats"
 	ClusterConfig          = "Cluster Config"
 )
@@ -93,6 +94,7 @@ type App struct {
 	Selected              Selected
 	Config                *config.Config
 	Colors                *config.ColorConfig
+	History               *config.History   // remembered consume parameters, persisted
 	CurrentFilters        map[string]string // pageName -> filter text for search preservation
 	HideInternalTopics    bool              // hide __*, *-changelog, *-repartition topics
 	InternalTopicPatterns []*regexp.Regexp  // extra user-defined patterns for internal topics
@@ -223,6 +225,7 @@ func NewApp() *App {
 		ConnectClients:        make(map[string]*connect.Client),
 		Config:                cfg,
 		Colors:                colors,
+		History:               config.LoadHistory(),
 		CurrentFilters:        make(map[string]string),
 		InternalTopicPatterns: internalTopicPatterns,
 		cgroupPrevLag:         make(map[string]map[string]int64),

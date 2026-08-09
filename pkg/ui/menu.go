@@ -195,6 +195,22 @@ var keys = map[string]Pair{
 		Key:   "<F1>",
 		Value: "Consume help",
 	},
+	"consume_editor": {
+		Key:   "<Ctrl+o>",
+		Value: "Edit in $EDITOR",
+	},
+	"consume_now": {
+		Key:   "<c>",
+		Value: "Consume",
+	},
+	"consume_history": {
+		Key:   "<Ctrl+r>",
+		Value: "History",
+	},
+	"history_select": {
+		Key:   "<Enter>",
+		Value: "Use params",
+	},
 	"execute_cli": {
 		Key:   "<e>",
 		Value: "Execute CLI command (Beta)",
@@ -344,6 +360,7 @@ const (
 	FindSchemaByIDPageMenu              = "FindSchemaByIDPageMenu"
 	ConsumeOutputPageMenu               = "ConsumeOutputPageMenu"
 	ConsumeParamsPageMenu               = "ConsumeParamsPageMenu"
+	ConsumeHistoryPageMenu              = "ConsumeHistoryPageMenu"
 	ConsumeHelpPageMenu                 = "ConsumeHelpPageMenu"
 	ConsumeStatsPageMenu                = "ConsumeStatsPageMenu"
 	ClusterConfigPageMenu               = "ClusterConfigPageMenu"
@@ -479,6 +496,7 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"sel",
 				"res",
 				"dsc",
+				"consume_now",
 				topicsSort,
 				"toggle_internal",
 				"create",
@@ -493,7 +511,14 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 			ConsumeParamsPageMenu: {
 				"submit_ctrl",
 				"cancel",
+				"consume_history",
+				"consume_editor",
 				"consume_help",
+			},
+			ConsumeHistoryPageMenu: {
+				"history_select",
+				"submit_ctrl",
+				"cancel",
 			},
 			ConsumeHelpPageMenu: {
 				"close_f1",
