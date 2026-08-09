@@ -26,7 +26,9 @@ A powerful Terminal UI (TUI) for Apache Kafka that provides an intuitive, keyboa
 - **Topics Management** - Browse, create, edit configs, increase partitions, and delete Kafka topics
 - **Topic Producers** - View active producers and in-flight transactions per partition for a topic
 - **Hide Internal Topics** - Toggle hiding of internal topics (`__*`, `*-changelog`, `*-repartition` by default) with configurable regex patterns
-- **Extra Actions Menu** - Context menu (`>`) on topic pages for secondary actions like Consume, CLI commands, and Producers
+- **Extra Actions Menu** - Context menu (`.`) on topic pages for secondary actions like Consume, CLI commands, Producers, and Consumer groups
+- **Message Consumer** - Consume from a topic with kcat-style parameters (offsets, timestamps, partitions, consumer group, avro/pack deserialization, output format, filter); `c` on the Topics list starts consuming at once with the parameters last used on that topic, `F1` shows the flag reference, `Ctrl+O` edits the parameters in `$EDITOR` with that reference inlined as comments
+- **Consume Parameters History** - Every parameter string actually used is remembered per cluster and topic in `~/.config/karat/history.yaml` and survives restarts; `Ctrl+R` in the parameters modal picks one to reuse
 - **Consumer Groups** - Monitor consumer groups, view lag and partition assignments, reset offsets, copy offsets to a new group
 - **Transactions** - Browse cluster-wide Kafka transactions (transactional ID, producer ID, state, timeout, partitions)
 - **ACLs** - View cluster access control lists (principal, resource, pattern type, operation, permission)
@@ -52,7 +54,7 @@ Access via `:` (colon) key. Schema Registry and Connect resources appear only wh
 | **Schema-registries** | Schema Registry instances | Select |
 | **Connect** | Kafka Connect instances | Select |
 | **Nodes** | Kafka brokers | List, describe |
-| **Topics** | Kafka topics | List, describe (incl. on-disk size), create, edit configs, increase partitions, delete, search, sort, hide internal topics, view producers, CLI templates, extra actions menu |
+| **Topics** | Kafka topics | List, describe (incl. on-disk size), create, edit configs, increase partitions, delete, search, sort, hide internal topics, view producers, consume messages, find consumer groups by topic, CLI templates, extra actions menu |
 | **Consumer groups** | Consumer groups | List, describe, view lag, reset offsets, copy offsets to a new group, delete (Empty state only), find by topic, search, sort |
 | **Transactions** | Cluster-wide Kafka transactions | List, describe, search, sort |
 | **ACLs** | Cluster access control lists | List, search, sort |
@@ -103,6 +105,8 @@ Karat requires at least one configuration file:
 
 - `~/.config/karat/config.yaml` - Application and cluster configuration (required)
 - Style file - UI color customization, path set via `karat.style` in config.yaml (optional)
+
+`~/.config/karat/history.yaml` is written by Karat itself — it remembers the consume parameters used per cluster and topic (newest first, capped at 30 entries). Deleting it only loses that history.
 
 ### 2. Run Karat
 

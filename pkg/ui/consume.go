@@ -18,7 +18,9 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"github.com/rs/zerolog/log"
 
+	"github.com/uraniumdawn/karat/pkg/config"
 	"github.com/uraniumdawn/karat/pkg/consumer"
 	"github.com/uraniumdawn/karat/pkg/schemaregistry"
 	"github.com/uraniumdawn/karat/pkg/util"
@@ -183,16 +185,132 @@ func toJSONValue(s string) string {
 	return string(quoted)
 }
 
-// ConsumeModal opens a multiline kcat-style consume params input for topicName.
+// defaultConsumeParams returns the parameters a topic is consumed with when nothing else
+// is known about it: tail the last 100 records per partition as JSON, decoded through the
+// selected schema registry when there is one.
+func (app *App) defaultConsumeParams() string {
+	const fmtFlag = `'{"Key":"%k","Value":%s,"Timestamp":%T,"Partition":%p,"Offset":%o,"Headers":"%h","Size":%S}\n'`
+	if app.Selected.SchemaRegistry != nil {
+		return "-o 100 -r " + app.Selected.SchemaRegistry.Name + " -f " + fmtFlag
+	}
+	return "-o 100 -f " + fmtFlag
+}
+
+// preparedConsume is a validated consume request, ready to be handed to StartConsuming.
+type preparedConsume struct {
+	params   consumer.Params
+	formatFn func(consumer.Record) string
+	filter   string
+}
+
+// prepareConsume parses raw kcat-style parameters for topicName and resolves the schema
+// registry client and the output format. ok is false when the request is unusable; a status
+// message describing why has already been sent in that case.
+func (app *App) prepareConsume(topicName, raw string) (preparedConsume, bool) {
+	spec, err := consumer.ParseConsumeArgs(raw)
+	if err != nil {
+		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		return preparedConsume{}, false
+	}
+
+	kafkaConf := make(kafka.ConfigMap)
+	for k, v := range app.Selected.Cluster.Properties {
+		_ = kafkaConf.SetKey(k, v)
+	}
+	params := consumer.Params{
+		KafkaConf:   &kafkaConf,
+		Topic:       topicName,
+		From:        spec.From,
+		To:          spec.To,
+		ExitOnEnd:   spec.ExitOnEnd,
+		Partitions:  spec.Partitions,
+		MaxCount:    spec.Count,
+		Group:       spec.Group,
+		KeySerdes:   spec.KeySerdes,
+		ValueSerdes: spec.ValueSerdes,
+	}
+
+	// Resolve schema registry by name if avro serdes is requested.
+	if spec.KeySerdes.Kind == consumer.SerdesAvro || spec.ValueSerdes.Kind == consumer.SerdesAvro {
+		if spec.SRName == "" {
+			SendStatusWithDefaultTTL("[red]-d avro requires -r <sr-name>")
+			return preparedConsume{}, false
+		}
+		srConfig, ok := app.SchemaRegistries[spec.SRName]
+		if !ok {
+			SendStatusWithDefaultTTL(
+				fmt.Sprintf("[red]schema registry %q not configured", spec.SRName),
+			)
+			return preparedConsume{}, false
+		}
+		srClient, ok := app.SchemaRegistryClients[spec.SRName]
+		if !ok {
+			var clientErr error
+			srClient, clientErr = schemaregistry.NewSchemaRegistryClient(srConfig)
+			if clientErr != nil {
+				SendStatusWithDefaultTTL(
+					fmt.Sprintf("[red]schema registry client: %s", clientErr),
+				)
+				return preparedConsume{}, false
+			}
+			app.SchemaRegistryClients[spec.SRName] = srClient
+		}
+		params.SRClient = srClient
+	}
+
+	formatFn := formatConsumeRecord
+	if spec.FormatStr != "" {
+		fs := spec.FormatStr
+		formatFn = func(r consumer.Record) string {
+			return consumer.ApplyFormat(r, fs, topicName)
+		}
+	}
+
+	return preparedConsume{params: params, formatFn: formatFn, filter: spec.Filter}, true
+}
+
+// rememberConsumeParams records raw as the parameters last used on topicName. Persisting
+// them is best-effort: failing to write the history file must not disturb the consume that
+// just started.
+func (app *App) rememberConsumeParams(topicName, raw string) {
+	app.History.AddConsume(app.Selected.Cluster.Name, topicName, raw)
+	if err := app.History.Save(); err != nil {
+		log.Error().Err(err).Msg("failed to save consume history")
+	}
+}
+
+// ConsumeWithLastParams starts consuming topicName straight away with the parameters last
+// used on it, falling back to the defaults when it has never been consumed on this cluster.
+func (app *App) ConsumeWithLastParams(topicName string) {
+	raw := app.History.LastConsume(app.Selected.Cluster.Name, topicName)
+	if raw == "" {
+		raw = app.defaultConsumeParams()
+	}
+
+	prepared, ok := app.prepareConsume(topicName, raw)
+	if !ok {
+		return
+	}
+
+	app.StartConsuming(topicName, prepared.params, prepared.formatFn, prepared.filter)
+	app.rememberConsumeParams(topicName, raw)
+	// The status line renders colour tags, and params routinely carry '[' in format strings.
+	SendStatus(tview.Escape(raw), 3*time.Second, false)
+}
+
+// consumeParamsModalHeight leaves two lines of parameters visible between the borders.
+const consumeParamsModalHeight = 4
+
+// ConsumeModal opens a multiline kcat-style consume params input for topicName, prefilled
+// with the parameters last used on it.
 // Supported flags: -o beginning|end|<n>|s@<ts>|e@<ts>  -f <format>.
 func (app *App) ConsumeModal(topicName string) {
 	bgColor := tcell.GetColor(app.Colors.Karat.Background)
 	placeholderTextColor := tcell.GetColor(app.Colors.Karat.Placeholder)
 
-	const fmtFlag = `'{"Key":"%k","Value":%s,"Timestamp":%T,"Partition":%p,"Offset":%o,"Headers":"%h","Size":%S}\n'`
-	defaultText := "-o 100 -f " + fmtFlag
-	if app.Selected.SchemaRegistry != nil {
-		defaultText = "-o 100 -r " + app.Selected.SchemaRegistry.Name + " -f " + fmtFlag
+	defaultText := app.History.LastConsume(app.Selected.Cluster.Name, topicName)
+	if defaultText == "" {
+		defaultText = app.defaultConsumeParams()
 	}
 
 	input := tview.NewTextArea().
@@ -206,68 +324,15 @@ func (app *App) ConsumeModal(topicName string) {
 			text = defaultText
 		}
 		raw := strings.ReplaceAll(text, "\n", " ")
-		spec, err := consumer.ParseConsumeArgs(raw)
-		if err != nil {
-			SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+
+		prepared, ok := app.prepareConsume(topicName, raw)
+		if !ok {
 			return
-		}
-		kafkaConf := make(kafka.ConfigMap)
-		for k, v := range app.Selected.Cluster.Properties {
-			_ = kafkaConf.SetKey(k, v)
-		}
-		params := consumer.Params{
-			KafkaConf:   &kafkaConf,
-			Topic:       topicName,
-			From:        spec.From,
-			To:          spec.To,
-			ExitOnEnd:   spec.ExitOnEnd,
-			Partitions:  spec.Partitions,
-			MaxCount:    spec.Count,
-			Group:       spec.Group,
-			KeySerdes:   spec.KeySerdes,
-			ValueSerdes: spec.ValueSerdes,
-		}
-
-		// Resolve schema registry by name if avro serdes is requested.
-		if spec.KeySerdes.Kind == consumer.SerdesAvro || spec.ValueSerdes.Kind == consumer.SerdesAvro {
-			if spec.SRName == "" {
-				SendStatusWithDefaultTTL("[red]-d avro requires -r <sr-name>")
-				return
-			}
-			srConfig, ok := app.SchemaRegistries[spec.SRName]
-			if !ok {
-				SendStatusWithDefaultTTL(
-					fmt.Sprintf("[red]schema registry %q not configured", spec.SRName),
-				)
-				return
-			}
-			srClient, ok := app.SchemaRegistryClients[spec.SRName]
-			if !ok {
-				var clientErr error
-				srClient, clientErr = schemaregistry.NewSchemaRegistryClient(srConfig)
-				if clientErr != nil {
-					SendStatusWithDefaultTTL(
-						fmt.Sprintf("[red]schema registry client: %s", clientErr),
-					)
-					return
-				}
-				app.SchemaRegistryClients[spec.SRName] = srClient
-			}
-			params.SRClient = srClient
-		}
-
-		var formatFn func(consumer.Record) string
-		if spec.FormatStr != "" {
-			fs := spec.FormatStr
-			formatFn = func(r consumer.Record) string {
-				return consumer.ApplyFormat(r, fs, topicName)
-			}
-		} else {
-			formatFn = formatConsumeRecord
 		}
 
 		app.HideModalPage(ConsumeParams)
-		app.StartConsuming(topicName, params, formatFn, spec.Filter)
+		app.StartConsuming(topicName, prepared.params, prepared.formatFn, prepared.filter)
+		app.rememberConsumeParams(topicName, raw)
 	}
 
 	input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -283,6 +348,14 @@ func (app *App) ConsumeModal(topicName string) {
 			app.ConsumeHelpModal()
 			app.ShowModalPage(ConsumeHelp)
 			return nil
+		case tcell.KeyCtrlO:
+			app.editConsumeParams(input)
+			return nil
+		case tcell.KeyCtrlR:
+			if app.ConsumeHistoryModal(topicName, input, submit) {
+				app.ShowModalPage(ConsumeHistory)
+			}
+			return nil
 		}
 		return event
 	})
@@ -292,70 +365,173 @@ func (app *App) ConsumeModal(topicName string) {
 	mainFlex.SetTitle(" Parameters ")
 	mainFlex.SetBorder(true)
 
-	modal := util.NewResourceModal(mainFlex, 12)
+	modal := util.NewWideModal(mainFlex, consumeParamsModalHeight)
 	app.Layout.PagesRegistry.UI.Pages.AddPage(ConsumeParams, modal, true, false)
+}
+
+// ConsumeHistoryModal builds the picker over the parameters remembered for the selected
+// cluster, topicName's own entries first. Enter puts the selected parameters into input,
+// Ctrl+Enter runs them through submit right away. It reports whether there is anything to
+// show — an empty history is reported to the user instead, and no page is registered.
+func (app *App) ConsumeHistoryModal(
+	topicName string,
+	input *tview.TextArea,
+	submit func(),
+) bool {
+	entries := app.History.ConsumeFor(app.Selected.Cluster.Name, topicName)
+	if len(entries) == 0 {
+		SendStatusWithDefaultTTL("no consume history yet")
+		return false
+	}
+
+	labelColor := tcell.GetColor(app.Colors.Karat.Label.FgColor)
+
+	table := tview.NewTable()
+	table.SetSelectable(true, false).SetFixed(1, 0).SetBorderPadding(0, 0, 1, 0)
+	table.SetSelectedStyle(
+		tcell.StyleDefault.Foreground(
+			tcell.GetColor(app.Colors.Karat.Selection.FgColor),
+		).Background(
+			tcell.GetColor(app.Colors.Karat.Selection.BgColor),
+		),
+	)
+	util.SetTableHeaders(table, labelColor, "Topic", "When", "Params")
+
+	for i, e := range entries {
+		table.SetCell(i+1, 0, tview.NewTableCell(e.Topic))
+		table.SetCell(i+1, 1, tview.NewTableCell(e.At.Local().Format("2006-01-02 15:04")))
+		// Params take the rest of the row; tview clips them at the border and the full
+		// string still lands in the text area on select.
+		table.SetCell(i+1, 2, tview.NewTableCell(e.Params).SetExpansion(1))
+	}
+	table.Select(1, 0)
+
+	// selected returns the entry under the cursor; the header row is not selectable.
+	selected := func() (config.ConsumeEntry, bool) {
+		row, _ := table.GetSelection()
+		if row < 1 || row > len(entries) {
+			return config.ConsumeEntry{}, false
+		}
+		return entries[row-1], true
+	}
+
+	table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if IsCtrlEnter(event) {
+			if e, ok := selected(); ok {
+				input.SetText(e.Params, true)
+				app.HideModalPage(ConsumeHistory)
+				submit()
+			}
+			return nil
+		}
+		switch event.Key() {
+		case tcell.KeyEnter:
+			if e, ok := selected(); ok {
+				input.SetText(e.Params, true)
+			}
+			app.HideModalPage(ConsumeHistory)
+			return nil
+		case tcell.KeyEsc:
+			app.HideModalPage(ConsumeHistory)
+			return nil
+		}
+		return event
+	})
+
+	container := tview.NewFlex().SetDirection(tview.FlexRow).AddItem(table, 0, 1, true)
+	container.SetTitle(" Consume History ").SetBorder(true)
+
+	modal := util.NewBottomModal(container)
+	app.Layout.PagesRegistry.UI.Pages.AddPage(ConsumeHistory, modal, true, false)
+
+	return true
+}
+
+// editConsumeParams hands the current parameters to $EDITOR and writes the result back
+// into input. The temp file carries the consume reference as comments below the
+// parameters so the flags are at hand while editing; they are dropped on the way back.
+func (app *App) editConsumeParams(input *tview.TextArea) {
+	buf := input.GetText() + "\n\n" + commentOut(app.consumeReference(false)) + "\n"
+
+	edited, ok := app.OpenInEditor("consume-params-*.conf", []byte(buf))
+	if !ok {
+		return
+	}
+
+	input.SetText(stripComments(string(edited)), true)
+}
+
+// commentOut prefixes every line of s with "# ".
+func commentOut(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight("# "+line, " ")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// stripComments drops the lines starting with '#' — a parameter line never does, since
+// every flag starts with '-' — and trims the surrounding blank lines.
+func stripComments(s string) string {
+	var kept []string
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+// consumeReferenceTemplate is the reference of all supported consume flags and format
+// specifiers. {k}…{/} marks a token highlighted with the label colour, {d}…{/} a dimmed
+// one; consumeReference either expands the markers to colour tags or drops them.
+const consumeReferenceTemplate = `{k}Flags{/}
+  {k}-o{/}    beginning | earliest | end | latest | <n>
+               tail last n messages per partition (default: 100)
+  {k}-s:{/}<offset>  start from absolute partition offset
+  {k}-s@{/}<ts>      start from timestamp
+  {k}-e:{/}<offset>  stop at offset, exclusive (requires -s:; overrides -o <n>)
+  {k}-e@{/}<ts>      stop at timestamp, exclusive (requires -s@; overrides -o <n>)
+  {k}-e{/}           exit when all partitions reach high-water mark
+  {k}-p{/}  <n>      restrict to partition (repeatable)
+  {k}-g{/}  <group>  consumer group ID (default: ephemeral)
+  {k}-d{/}  <serdes> | key=<serdes> | value=<serdes>
+             serdes:  avro  |  pack: [>|<][bBhHiIqQcs]+
+             > big-endian (recommended)  < little-endian
+             b/B int8/uint8   h/H int16/uint16   i/I int32/uint32
+             q/Q int64/uint64  c char  s remaining bytes as string (must be last)
+             examples:    -d avro   -d key=>i   -d value=>qs
+  {k}-r{/}  <sr-name>  schema registry name (required for avro)
+  {k}-f{/}  <format>   output format string (must be last flag)
+  {k}|{/}   <pattern>  show only records whose output contains pattern
+
+{k}Format specifiers for -f{/}
+  {k}%k{/} key      {k}%s{/} value      {k}%p{/} partition
+  {k}%o{/} offset   {k}%T{/} timestamp  {k}%t{/} topic
+  {k}%h{/} headers  {k}%S{/} size (bytes)
+
+{d}Timestamp formats{/}  unix-ms | RFC3339 | 2006-01-02T15:04:05.000`
+
+// consumeReference renders consumeReferenceTemplate, with tview colour tags when
+// colored is true and as plain text otherwise.
+func (app *App) consumeReference(colored bool) string {
+	if !colored {
+		return strings.NewReplacer("{k}", "", "{d}", "", "{/}", "").
+			Replace(consumeReferenceTemplate)
+	}
+	return strings.NewReplacer(
+		"{k}", "["+app.Colors.Karat.Label.FgColor+"]",
+		"{d}", "[gray]",
+		"{/}", "[-]",
+	).Replace(consumeReferenceTemplate)
 }
 
 // ConsumeHelpModal shows a read-only reference of all supported consume flags and format specifiers.
 func (app *App) ConsumeHelpModal() {
-	labelColor := app.Colors.Karat.Label.FgColor
-	dimColor := "gray"
-
-	content := fmt.Sprintf(
-		"[%s]Flags[-]\n"+
-			"  [%s]-o[-]    beginning | earliest | end | latest | <n>\n"+
-			"               tail last n messages per partition (default: 100)\n"+
-			"  [%s]-s:[-]<offset>  start from absolute partition offset\n"+
-			"  [%s]-s@[-]<ts>      start from timestamp\n"+
-			"  [%s]-e:[-]<offset>  stop at offset, exclusive (requires -s:; overrides -o <n>)\n"+
-			"  [%s]-e@[-]<ts>      stop at timestamp, exclusive (requires -s@; overrides -o <n>)\n"+
-			"  [%s]-e[-]           exit when all partitions reach high-water mark\n"+
-			"  [%s]-p[-]  <n>      restrict to partition (repeatable)\n"+
-			"  [%s]-g[-]  <group>  consumer group ID (default: ephemeral)\n"+
-			"  [%s]-d[-]  <serdes> | key=<serdes> | value=<serdes>\n"+
-			"             serdes:  avro  |  pack: [>|<][bBhHiIqQcs]+\n"+
-			"             > big-endian (recommended)  < little-endian\n"+
-			"             b/B int8/uint8   h/H int16/uint16   i/I int32/uint32\n"+
-			"             q/Q int64/uint64  c char  s remaining bytes as string (must be last)\n"+
-			"             examples:    -d avro   -d key=>i   -d value=>qs\n"+
-			"  [%s]-r[-]  <sr-name>  schema registry name (required for avro)\n"+
-			"  [%s]-f[-]  <format>   output format string (must be last flag)\n"+
-			"  [%s]|[-]   <pattern>  show only records whose output contains pattern\n"+
-			"\n"+
-			"[%s]Format specifiers for -f[-]\n"+
-			"  [%s]%%k[-] key      [%s]%%s[-] value     [%s]%%p[-] partition\n"+
-			"  [%s]%%o[-] offset   [%s]%%T[-] timestamp  [%s]%%t[-] topic\n"+
-			"  [%s]%%h[-] headers  [%s]%%S[-] size (bytes)\n"+
-			"\n"+
-			"[%s]Timestamp formats[-]  unix-ms | RFC3339 | 2006-01-02T15:04:05.000",
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		labelColor,
-		dimColor,
-	)
-
 	view := tview.NewTextView().
 		SetDynamicColors(true).
-		SetText(content).
+		SetText(app.consumeReference(true)).
 		SetScrollable(false)
 	view.SetBorder(false).SetBorderPadding(0, 0, 1, 1)
 

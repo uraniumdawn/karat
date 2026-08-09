@@ -20,19 +20,38 @@ func isEnvSet(env string) bool {
 	return os.Getenv(env) != ""
 }
 
-// GetConfigPath returns the path to the application configuration file.
-func GetConfigPath() (string, error) {
-	var configDir string
+// configDir returns the directory holding the application's files: <KARAT_CONFIG_DIR or
+// $HOME>/.config/karat.
+func configDir() (string, error) {
+	var base string
 	switch {
 	case isEnvSet(KaratEnvConfigDir):
-		configDir = os.Getenv(KaratEnvConfigDir)
+		base = os.Getenv(KaratEnvConfigDir)
 	default:
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			log.Fatal().Err(err).Msg("error getting home directory")
 			return "", err
 		}
-		configDir = homeDir
+		base = homeDir
 	}
-	return filepath.Join(configDir, ".config", "karat", "config.yaml"), nil
+	return filepath.Join(base, ".config", "karat"), nil
+}
+
+// GetConfigPath returns the path to the application configuration file.
+func GetConfigPath() (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config.yaml"), nil
+}
+
+// GetHistoryPath returns the path to the file holding the application's usage history.
+func GetHistoryPath() (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "history.yaml"), nil
 }

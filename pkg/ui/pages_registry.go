@@ -139,6 +139,7 @@ func (pr *PagesRegistry) SetupPageMenus() {
 	pr.PageMenuMap[ConsumeOutput] = ConsumeOutputPageMenu
 	pr.PageMenuMap[ConsumeParams] = ConsumeParamsPageMenu
 	pr.PageMenuMap[ConsumeHelp] = ConsumeHelpPageMenu
+	pr.PageMenuMap[ConsumeHistory] = ConsumeHistoryPageMenu
 	pr.PageMenuMap[ClusterConfig] = ClusterConfigPageMenu
 }
 

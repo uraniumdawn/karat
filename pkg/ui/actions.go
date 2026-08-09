@@ -15,7 +15,7 @@ import (
 )
 
 // Extra actions registry keys, one per page kind that supports the "Extra Actions"
-// modal (triggered by '>').
+// modal (triggered by '.').
 const (
 	// TopicDescriptionExtraActions is the registry key for extra actions available
 	// from the topic description page.
@@ -72,6 +72,12 @@ var extraActionsRegistry = map[string][]ExtraAction{
 				Publish(TopicsChannel, GetTopicProducersEventType, Payload{ctx, false})
 			},
 		},
+		{
+			Name: "Consumer groups",
+			Run: func(app *App, ctx string) {
+				Publish(CgroupsChannel, FindCgroupsByTopicEventType, Payload{ctx, false})
+			},
+		},
 	},
 	TopicsExtraActions: {
 		{
@@ -85,6 +91,12 @@ var extraActionsRegistry = map[string][]ExtraAction{
 			Name: "CLI commands",
 			Run: func(app *App, ctx string) {
 				app.CliTemplates(ctx)
+			},
+		},
+		{
+			Name: "Consumer groups",
+			Run: func(app *App, ctx string) {
+				Publish(CgroupsChannel, FindCgroupsByTopicEventType, Payload{ctx, false})
 			},
 		},
 		{

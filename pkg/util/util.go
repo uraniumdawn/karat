@@ -155,14 +155,36 @@ func NewModal(p tview.Primitive) tview.Primitive {
 		AddItem(nil, 2, 0, false)
 }
 
+// ConfirmationModalHeight is the height of a confirmation dialog: a single content row
+// between the two border lines.
+const ConfirmationModalHeight = 3
+
 // NewConfirmationModal centers p in a flex layout sized for a small confirmation dialog.
 func NewConfirmationModal(p tview.Primitive) tview.Primitive {
+	return NewWideModal(p, ConfirmationModalHeight)
+}
+
+// NewWideModal puts p near the top of the content area with a fixed height, spanning the
+// width of a confirmation dialog.
+func NewWideModal(p tview.Primitive, height int) tview.Primitive {
 	return tview.NewFlex().
 		AddItem(nil, 1, 0, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
 			AddItem(nil, 1, 0, false).
-			AddItem(p, 3, 0, true).
+			AddItem(p, height, 0, true).
 			AddItem(nil, 0, 9, false), 0, 2, true).
+		AddItem(nil, 1, 0, false)
+}
+
+// NewBottomModal anchors p to the bottom third of the content area, as wide as a
+// confirmation dialog and with the same one-row margin, here below p instead of above it.
+func NewBottomModal(p tview.Primitive) tview.Primitive {
+	return tview.NewFlex().
+		AddItem(nil, 1, 0, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(nil, 0, 2, false).
+			AddItem(p, 0, 1, true).
+			AddItem(nil, 1, 0, false), 0, 2, true).
 		AddItem(nil, 1, 0, false)
 }
 

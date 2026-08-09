@@ -10,8 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
 	"slices"
 	"sort"
 	"strconv"
@@ -658,63 +656,8 @@ func (app *App) openEditorForConfig(name string, config map[string]interface{}) 
 	}
 	oldHash := sha256.Sum256(bytes.TrimRight(oldJSON, "\r\n\t "))
 
-	// Create temp file
-	tmpFile, err := os.CreateTemp("", "connector-config-*.json")
-	if err != nil {
-		log.Error().Err(err).Msg("failed to create temp file")
-		SendStatusWithDefaultTTL("[red]failed to create temp file")
-		return
-	}
-	tmpPath := tmpFile.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if _, err := tmpFile.Write(oldJSON); err != nil {
-		log.Error().Err(err).Msg("failed to write temp file")
-		SendStatusWithDefaultTTL("[red]failed to write temp file")
-		return
-	}
-	if err := tmpFile.Close(); err != nil {
-		log.Error().Err(err).Msg("failed to close temp file")
-		SendStatusWithDefaultTTL("[red]failed to close temp file")
-		return
-	}
-
-	// Open editor
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vim"
-	}
-
-	// Parse editor command and arguments
-	parts := strings.Fields(editor)
-	cmd := exec.Command(parts[0], append(parts[1:], tmpPath)...)
-
-	// os.Stdin/Stdout/Stderr are redirected to the log file by InitLogger.
-	// Open /dev/tty directly so the editor gets the actual terminal.
-	tty, ttyErr := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if ttyErr == nil {
-		cmd.Stdin = tty
-		cmd.Stdout = tty
-		cmd.Stderr = tty
-	} else {
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-
-	// Temporarily stop the TUI so the editor can take over the terminal
-	app.Suspend(func() {
-		_ = cmd.Run()
-		if tty != nil {
-			_ = tty.Close()
-		}
-	})
-
-	// Read edited content
-	newContent, err := os.ReadFile(tmpPath)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to read edited config")
-		SendStatusWithDefaultTTL("[red]failed to read edited config")
+	newContent, ok := app.OpenInEditor("connector-config-*.json", oldJSON)
+	if !ok {
 		return
 	}
 
@@ -821,51 +764,8 @@ func (app *App) CreateConnectorConfig() {
 
 // openEditorForNewConnector opens the editor with an empty file and handles the result.
 func (app *App) openEditorForNewConnector() {
-	tmpFile, err := os.CreateTemp("", "connector-create-*.json")
-	if err != nil {
-		log.Error().Err(err).Msg("failed to create temp file")
-		SendStatusWithDefaultTTL("[red]failed to create temp file")
-		return
-	}
-	tmpPath := tmpFile.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if err := tmpFile.Close(); err != nil {
-		log.Error().Err(err).Msg("failed to close temp file")
-		SendStatusWithDefaultTTL("[red]failed to close temp file")
-		return
-	}
-
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vim"
-	}
-
-	parts := strings.Fields(editor)
-	cmd := exec.Command(parts[0], append(parts[1:], tmpPath)...)
-
-	tty, ttyErr := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if ttyErr == nil {
-		cmd.Stdin = tty
-		cmd.Stdout = tty
-		cmd.Stderr = tty
-	} else {
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-
-	app.Suspend(func() {
-		_ = cmd.Run()
-		if tty != nil {
-			_ = tty.Close()
-		}
-	})
-
-	newContent, err := os.ReadFile(tmpPath)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to read connector create file")
-		SendStatusWithDefaultTTL("[red]failed to read connector create file")
+	newContent, ok := app.OpenInEditor("connector-create-*.json", nil)
+	if !ok {
 		return
 	}
 
