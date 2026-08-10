@@ -107,7 +107,7 @@ func (app *App) Cluster() {
 }
 
 func addClustersTableHeader(table *tview.Table, labelColor tcell.Color) {
-	util.SetTableHeaders(table, labelColor, "Name", "Servers", "Mode")
+	util.SetTableHeaders(table, labelColor, "Name", "Servers", "Active")
 }
 
 func (app *App) NewClustersTable() *tview.Table {
@@ -131,14 +131,11 @@ func (app *App) NewClustersTable() *tview.Table {
 	// Iterate over the config slice to preserve order from config file
 	row := 1
 	for _, cluster := range app.Config.Karat.Clusters {
-		modeText := cluster.Mode
-		if modeText == "" {
-			modeText = "regular"
-		}
+		active := app.isClusterSelected(app.Selected) && app.Selected.Cluster.Name == cluster.Name
 		table.
 			SetCell(row, 0, tview.NewTableCell(cluster.Name)).
 			SetCell(row, 1, tview.NewTableCell(cluster.Properties["bootstrap.servers"])).
-			SetCell(row, 2, tview.NewTableCell(modeText))
+			SetCell(row, 2, tview.NewTableCell(activeMarkerFor(active)))
 		row++
 	}
 	return table
@@ -151,7 +148,11 @@ func (app *App) ClustersTableInputHandler(ct *tview.Table) {
 		cluster := app.Clusters[clusterName]
 
 		if event.Key() == tcell.KeyEnter {
+			if cluster == nil {
+				return event
+			}
 			app.SelectCluster(cluster, true)
+			util.SetColumnMarker(ct, 2, row, activeMarker)
 			ClearStatus()
 		}
 
@@ -164,29 +165,7 @@ func (app *App) ClustersTableInputHandler(ct *tview.Table) {
 		}
 
 		if event.Key() == tcell.KeyTab {
-			if cluster == nil {
-				return event
-			}
-			if cluster.Mode == "read-only" {
-				cluster.Mode = ""
-			} else {
-				cluster.Mode = "read-only"
-			}
-			modeText := cluster.Mode
-			if modeText == "" {
-				modeText = "regular"
-			}
-			ct.GetCell(row, 2).SetText(modeText)
-			if app.isClusterSelected(app.Selected) && app.Selected.Cluster.Name == clusterName {
-				app.Layout.SetSelected(
-					app.Selected.Cluster,
-					app.Selected.SchemaRegistry,
-					app.Selected.Connect,
-				)
-			}
-			if err := app.Config.Save(); err != nil {
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to save config: %s", err.Error()))
-			}
+			app.cycleMode()
 			return nil
 		}
 

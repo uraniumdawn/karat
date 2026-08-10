@@ -1,12 +1,12 @@
-FROM golang:1.22.4 AS builder
+FROM golang:1.24 AS builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 
-# Build static binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o data-generator main.go
+# Static binary for whatever architecture the build runs on.
+RUN CGO_ENABLED=0 GOOS=linux go build -o data-generator main.go
 
 # Minimal runtime image
 FROM gcr.io/distroless/static:nonroot

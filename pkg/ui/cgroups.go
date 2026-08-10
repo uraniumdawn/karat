@@ -28,8 +28,6 @@ const (
 	GetCgroupsEventType EventType = "cgroups:get"
 	// GetCgroupEventType is the event type for fetching a specific consumer group.
 	GetCgroupEventType EventType = "cgroup:get"
-	// ResetCgroupOffsetEventType is the event type for resetting consumer group offsets.
-	ResetCgroupOffsetEventType EventType = "cgroup:reset-offset"
 	// DeleteCgroupEventType is the event type for deleting a consumer group.
 	DeleteCgroupEventType EventType = "cgroup:delete"
 	// FindCgroupsByTopicEventType is the event type for finding consumer groups by topic.
@@ -38,12 +36,6 @@ const (
 
 // CgroupsChannel is the channel for consumer group events.
 var CgroupsChannel = make(chan Event)
-
-// ResetOffsetPayload contains data for resetting consumer group offsets.
-type ResetOffsetPayload struct {
-	GroupName   string
-	Description *client.DescribeConsumerGroupResult
-}
 
 // RunCgroupsEventHandler processes consumer group events from the channel.
 func (app *App) RunCgroupsEventHandler(ctx context.Context, in chan Event) {
@@ -80,21 +72,10 @@ func (app *App) RunCgroupsEventHandler(ctx context.Context, in chan Event) {
 						app.ConsumerGroup(consumerGroup)
 					}
 
-				case ResetCgroupOffsetEventType:
-					payload := event.Payload.Data.(ResetOffsetPayload)
-					app.QueueUpdateDraw(func() {
-						app.ResetConsumerGroupOffsetModal(
-							payload.GroupName,
-							payload.Description,
-						)
-						app.ShowModalPage(ResetOffset)
-					})
-
 				case DeleteCgroupEventType:
 					groupName := event.Payload.Data.(string)
 					app.QueueUpdateDraw(func() {
 						app.DeleteConsumerGroup(groupName)
-						app.ShowModalPage(DeleteConsumerGroup)
 					})
 
 				case FindCgroupsByTopicEventType:
@@ -155,8 +136,8 @@ func (app *App) ConsumerGroups(force bool) {
 				cancel()
 				return
 			case <-ctx.Done():
-				log.Error().Msg("timeout while to list consumer groups")
-				SendStatusWithDefaultTTL("[red]timeout while to list consumer groups")
+				log.Error().Msg("timeout while listing consumer groups")
+				SendStatusWithDefaultTTL("[red]timeout while listing consumer groups")
 				return
 			}
 		}
@@ -177,6 +158,11 @@ func (app *App) setupGroupsTable(
 	table.SetTitle(title)
 	app.AddToPagesRegistry(pageKey, table, ConsumerGroupsPageMenu, true)
 
+	// A refresh builds a new table: without this the cursor lands on the first row, and the
+	// next key acts on a group the user did not pick.
+	app.RestoreSelection(pageKey, table, afterHeaderRow)
+	app.TrackSelection(pageKey, table, afterHeaderRow)
+
 	sortCol := 0
 	sortDesc := false
 	labelColor := tcell.GetColor(app.Colors.Karat.Label.FgColor)
@@ -187,24 +173,26 @@ func (app *App) setupGroupsTable(
 		}
 
 		if IsKey(event, 'd') {
-			row, _ := table.GetSelection()
-			groupName := table.GetCell(row, 0).Text
+			groupName, ok := selectedName(table, afterHeaderRow)
+			if !ok {
+				return nil
+			}
 			Publish(CgroupsChannel, GetCgroupEventType, Payload{groupName, false})
 		}
 
 		if IsKey(event, '.') {
-			row, _ := table.GetSelection()
-			groupName := table.GetCell(row, 0).Text
+			groupName, ok := selectedName(table, afterHeaderRow)
+			if !ok {
+				return nil
+			}
 			app.ShowExtraActions(ConsumerGroupsExtraActions, groupName)
 		}
 
 		if event.Key() == tcell.KeyCtrlD {
-			if app.IsCurrentClusterReadOnly() {
-				SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
-				return event
+			groupName, ok := selectedName(table, afterHeaderRow)
+			if !ok {
+				return nil
 			}
-			row, _ := table.GetSelection()
-			groupName := table.GetCell(row, 0).Text
 
 			for _, g := range groups.Valid {
 				if g.GroupID == groupName {
@@ -231,6 +219,7 @@ func (app *App) setupGroupsTable(
 			}
 			sortGroupsTable(table, groups.Valid, lags, sortCol, sortDesc, labelColor)
 			table.ScrollToBeginning()
+			app.RestoreSelection(pageKey, table, afterHeaderRow)
 			return event
 		}
 
@@ -243,6 +232,7 @@ func (app *App) setupGroupsTable(
 			}
 			sortGroupsTable(table, groups.Valid, lags, sortCol, sortDesc, labelColor)
 			table.ScrollToBeginning()
+			app.RestoreSelection(pageKey, table, afterHeaderRow)
 			return event
 		}
 
@@ -256,6 +246,7 @@ func (app *App) setupGroupsTable(
 			}
 			sortGroupsTable(table, groups.Valid, lags, sortCol, sortDesc, labelColor)
 			table.ScrollToBeginning()
+			app.RestoreSelection(pageKey, table, afterHeaderRow)
 			return event
 		}
 
@@ -266,6 +257,9 @@ func (app *App) setupGroupsTable(
 		filterConsumerGroupsTable(table, groups.Valid, lags, text, labelColor)
 		util.SetSearchableTableTitle(table, title, text)
 		table.ScrollToBeginning()
+		// The rows the cursor pointed at are gone; without this the selection is left past
+		// the end of the filtered table and every row action reads an empty cell.
+		app.RestoreSelection(pageKey, table, afterHeaderRow)
 	})
 
 	// redraw rebuilds the rows in place, keeping the active filter or sort.
@@ -276,6 +270,7 @@ func (app *App) setupGroupsTable(
 		} else {
 			sortGroupsTable(table, groups.Valid, lags, sortCol, sortDesc, labelColor)
 		}
+		app.RestoreSelection(pageKey, table, afterHeaderRow)
 	}
 
 	// Fill the Lag column asynchronously. ConsumerGroupTotalLags issues one
@@ -481,31 +476,18 @@ func (app *App) ConsumerGroup(name string) {
 								return nil
 							}
 							if IsKey(event, 'o') {
-								if app.IsCurrentClusterReadOnly() {
-									SendStatusWithDefaultTTL(
-										"[red]cluster is in read-only mode",
-									)
+								if !app.offsetsEditable(description) {
 									return event
 								}
-								for _, d := range description.ConsumerGroupDescriptions {
-									if len(d.Members) > 0 {
-										SendStatusWithDefaultTTL(
-											"[red]cannot reset offsets: consumer group has active members",
-										)
-										return event
-									}
+								app.resetOffsets(name, description, offsetsByTopic)
+								return nil
+							}
+							if IsKey(event, 'O') {
+								if !app.offsetsEditable(description) {
+									return event
 								}
-								Publish(
-									CgroupsChannel,
-									ResetCgroupOffsetEventType,
-									Payload{
-										Data: ResetOffsetPayload{
-											GroupName:   name,
-											Description: description,
-										},
-										Force: false,
-									},
-								)
+								app.resetOffsets(name, description, offsetsByPartition)
+								return nil
 							}
 
 							return event
@@ -534,529 +516,263 @@ func (app *App) ConsumerGroup(name string) {
 	}()
 }
 
-// ResetConsumerGroupOffsetModal opens the reset offset modal for the given consumer group.
-func (app *App) ResetConsumerGroupOffsetModal(
-	groupName string,
+// offsetsEditable reports whether the group's committed offsets can be altered right now,
+// sending the reason to the status line when they cannot. Kafka rejects an offset commit
+// for a group that still has members, and a read-only cluster forbids it outright.
+func (app *App) offsetsEditable(description *client.DescribeConsumerGroupResult) bool {
+	if !app.Allowed() {
+		return false
+	}
+
+	for _, d := range description.ConsumerGroupDescriptions {
+		if len(d.Members) > 0 {
+			SendStatusWithDefaultTTL(
+				"[red]cannot reset offsets: consumer group has active members",
+			)
+			return false
+		}
+	}
+
+	return true
+}
+
+// WithTopicPartitionCounts fetches the cluster's topic partition counts and hands them to
+// fn on the UI goroutine. The offset-reset flow needs them: the partitions of a topic the
+// group has never consumed can only come from cluster metadata.
+func (app *App) WithTopicPartitionCounts(fn func(counts map[string]int)) {
+	resultCh := make(chan map[string]int)
+	errorCh := make(chan error)
+
+	c := app.GetCurrentKafkaClient()
+	SendStatusInfinite("fetching cluster topics")
+	c.TopicPartitionCounts(resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		defer cancel()
+
+		select {
+		case counts := <-resultCh:
+			app.QueueUpdateDraw(func() {
+				ClearStatus()
+				fn(counts)
+			})
+		case err := <-errorCh:
+			log.Error().Err(err).Msg("failed to fetch cluster topics")
+			SendStatusWithDefaultTTL(
+				fmt.Sprintf("[red]failed to fetch cluster topics: %s", err.Error()),
+			)
+		case <-ctx.Done():
+			log.Error().Msg("timeout while fetching cluster topics")
+			SendStatusWithDefaultTTL("[red]timeout while fetching cluster topics")
+		}
+	}()
+}
+
+// resetOffsets opens the offset-reset flow for a group: the offsets document in the editor,
+// at the requested granularity. The cluster's topic partition counts are fetched first — the
+// document takes the partitions of a topic the group has never consumed from them. The caller
+// has already checked that the offsets are editable at all.
+func (app *App) resetOffsets(
+	name string,
 	description *client.DescribeConsumerGroupResult,
-	extraTopics ...string,
+	granularity offsetsGranularity,
 ) {
-	allTopics := description.GetTopicNames()
-	// Make a copy so we can add new topics to it; extraTopics carries user-added entries.
-	allTopicsCopy := make([]string, len(allTopics), len(allTopics)+len(extraTopics))
-	copy(allTopicsCopy, allTopics)
-	allTopics = append(allTopicsCopy, extraTopics...)
-	topicStrategies := make(map[string]client.TopicStrategy, len(allTopics)+1)
-	invalidValues := make(map[string]bool)
-	for _, t := range allTopics {
-		topicStrategies[t] = client.TopicStrategy{}
-	}
+	committed := description.GetCommittedOffsets()
 
-	// ── Color & style shortcuts ───────────────────────────────────────────
-	labelColor := tcell.GetColor(app.Colors.Karat.Label.FgColor)
-	foregroundColor := tcell.GetColor(app.Colors.Karat.Foreground)
-	selectedStyle := tcell.StyleDefault.
-		Foreground(tcell.GetColor(app.Colors.Karat.Selection.FgColor)).
-		Background(tcell.GetColor(app.Colors.Karat.Selection.BgColor))
-
-	isValueStrategy := func(strategy string) bool {
-		return strategy == "to-timestamp" || strategy == "to-offset"
-	}
-
-	table, valueInputs, valueColumnFlex, container := app.newOffsetBatchTable(
-		allTopics,
-		labelColor,
-		selectedStyle,
-	)
-
-	// innerPages hosts the batch table as the base layer and the strategy picker as an overlay.
-	innerPages := tview.NewPages()
-	innerPages.AddPage("batch", container, true, true)
-
-	formatTimestampMs := func(ms int64) string {
-		return time.UnixMilli(ms).Format("2006-01-02T15:04:05.000")
-	}
-
-	placeholderTextColor := tcell.GetColor(app.Colors.Karat.Placeholder)
-
-	setInputPlaceholder := func(input *tview.InputField, strategy string) {
-		input.SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			))
-		switch strategy {
-		case "to-timestamp":
-			input.SetPlaceholder("eg: 2025-02-23T00:00:00.000")
-			input.SetPlaceholderTextColor(placeholderTextColor)
-		case "to-offset":
-			input.SetPlaceholder("19 digits")
-			input.SetPlaceholderTextColor(placeholderTextColor)
-		default:
-			input.SetPlaceholder("")
-		}
-	}
-
-	// setInputValueText sets the input text and resets the color for the given strategy & value.
-	// For value strategies with 0 committed value, preserves text but clears invalid red.
-	// For non-value strategies, clears the input entirely.
-	setInputValueText := func(input *tview.InputField, strategy string, value int64) {
-		if strategy == "to-timestamp" && value > 0 {
-			input.SetText(formatTimestampMs(value))
-			input.SetFieldTextColor(foregroundColor)
-		} else if strategy == "to-offset" && value > 0 {
-			input.SetText(fmt.Sprintf("%d", value))
-			input.SetFieldTextColor(foregroundColor)
-		} else if !isValueStrategy(strategy) {
-			input.SetText("")
-		} else {
-			input.SetFieldTextColor(foregroundColor)
-		}
-	}
-
-	// applyStrategyToAll applies the given strategy to all topics.
-	applyStrategyToAll := func(strategy string, value int64) {
-		for _, topic := range allTopics {
-			newTs := client.TopicStrategy{Strategy: strategy}
-			switch strategy {
-			case "to-timestamp":
-				newTs.TimestampMs = value
-			case "to-offset":
-				newTs.OffsetValue = value
-			}
-			topicStrategies[topic] = newTs
-			row := topicToRow(table, topic)
-			if row > 0 {
-				table.GetCell(row, 1).SetText(strategy)
-				if input, ok := valueInputs[row]; ok {
-					setInputPlaceholder(input, strategy)
-					setInputValueText(input, strategy, value)
-				}
-				delete(invalidValues, topic)
-			}
-		}
-	}
-
-	// syncValueCell updates the value input for a specific row from the strategy map.
-	syncValueCell := func(row int) {
-		if row <= 0 || row >= table.GetRowCount() {
-			return
-		}
-		topic := table.GetCell(row, 0).Text
-		input, ok := valueInputs[row]
-		if !ok {
-			return
-		}
-
-		// Skip syncing for special rows.
-		if topic == allTopicsRowName || topic == newTopicRowName {
-			input.SetText("")
-			return
-		}
-
-		ts := topicStrategies[topic]
-
-		if ts.Strategy == "" {
-			input.SetText("")
-			return
-		}
-
-		setInputPlaceholder(input, ts.Strategy)
-
-		switch {
-		case ts.Strategy == "to-timestamp" && ts.TimestampMs > 0:
-			input.SetText(formatTimestampMs(ts.TimestampMs))
-			input.SetFieldTextColor(foregroundColor)
-		case ts.Strategy == "to-offset" && ts.OffsetValue > 0:
-			input.SetText(fmt.Sprintf("%d", ts.OffsetValue))
-			input.SetFieldTextColor(foregroundColor)
-		case ts.Strategy == "to-timestamp":
-			// When TimestampMs == 0, leave the input as-is to preserve any uncommitted user input.
-		case ts.Strategy == "to-offset":
-			// When OffsetValue == 0, leave the input as-is to preserve any uncommitted user input.
-		default:
-			input.SetText("")
-		}
-
-		// setInputPlaceholder resets SetFieldStyle to normal colors; re-apply red if still invalid.
-		if invalidValues[topic] {
-			input.SetFieldTextColor(tcell.ColorRed)
-		}
-	}
-
-	// applyStrategy sets the chosen strategy directly on the given topic row.
-	applyStrategy := func(topic string, row int, strategy string) {
-		if topic == allTopicsRowName {
-			currentValue := int64(0)
-			if len(allTopics) > 0 {
-				currentTs := topicStrategies[allTopics[0]]
-				switch currentTs.Strategy {
-				case "to-timestamp":
-					currentValue = currentTs.TimestampMs
-				case "to-offset":
-					currentValue = currentTs.OffsetValue
-				}
-			}
-			nextValue := currentValue
-			if !isValueStrategy(strategy) {
-				nextValue = 0
-			}
-			applyStrategyToAll(strategy, nextValue)
-			return
-		}
-
-		ts := topicStrategies[topic]
-		newTs := client.TopicStrategy{
-			Strategy:    strategy,
-			TimestampMs: ts.TimestampMs,
-			OffsetValue: ts.OffsetValue,
-		}
-		if !isValueStrategy(strategy) {
-			newTs.TimestampMs = 0
-			newTs.OffsetValue = 0
-		}
-		topicStrategies[topic] = newTs
-		delete(invalidValues, topic)
-
-		table.GetCell(row, 1).SetText(strategy)
-		if input, ok := valueInputs[row]; ok {
-			setInputPlaceholder(input, strategy)
-			value := int64(0)
-			switch strategy {
-			case "to-timestamp":
-				value = ts.TimestampMs
-			case "to-offset":
-				value = ts.OffsetValue
-			}
-			setInputValueText(input, strategy, value)
-		}
-	}
-
-	// commitValueInput parses and commits the value from a row's input field.
-	commitValueInput := func(row int) bool {
-		if row <= 0 || row >= table.GetRowCount() {
-			return false
-		}
-		topic := table.GetCell(row, 0).Text
-		input, ok := valueInputs[row]
-		if !ok {
-			return false
-		}
-
-		checkTopic := topic
-		if topic == allTopicsRowName && len(allTopics) > 0 {
-			checkTopic = allTopics[0]
-		}
-		currentTs, hasStrategy := topicStrategies[checkTopic]
-
-		valStr := input.GetText()
-		if valStr == "" || !hasStrategy || currentTs.Strategy == "" {
-			delete(invalidValues, topic)
-			return true
-		}
-
-		switch currentTs.Strategy {
-		case "to-timestamp":
-			t, err := parseTimestamp(valStr)
-			if err != nil {
-				if topic != allTopicsRowName {
-					input.SetFieldTextColor(tcell.ColorRed)
-					invalidValues[topic] = true
-				}
-				return false
-			}
-			tsMs := t.UnixMilli()
-			if topic == allTopicsRowName {
-				applyStrategyToAll("to-timestamp", tsMs)
-				return true
-			}
-			topicStrategies[topic] = client.TopicStrategy{
-				Strategy: "to-timestamp", TimestampMs: tsMs,
-			}
-			delete(invalidValues, topic)
-			input.SetFieldTextColor(foregroundColor)
-
-		case "to-offset":
-			offsetVal, err := strconv.ParseInt(valStr, 10, 64)
-			if err != nil || offsetVal < 0 {
-				if topic != allTopicsRowName {
-					input.SetFieldTextColor(tcell.ColorRed)
-					invalidValues[topic] = true
-				}
-				return false
-			}
-			if topic == allTopicsRowName {
-				applyStrategyToAll("to-offset", offsetVal)
-				return true
-			}
-			topicStrategies[topic] = client.TopicStrategy{
-				Strategy: "to-offset", OffsetValue: offsetVal,
-			}
-			delete(invalidValues, topic)
-			input.SetFieldTextColor(foregroundColor)
-		}
-		return true
-	}
-
-	// openStrategyPicker overlays a small strategy selection table over innerPages.
-	openStrategyPicker := func(topic string, row int) {
-		pickerLabels := []string{" __clear", " to-earliest", " to-latest", " to-timestamp", " to-offset"}
-		pickerValues := []string{"", "to-earliest", "to-latest", "to-timestamp", "to-offset"}
-
-		currentStrategy := ""
-		if topic == allTopicsRowName {
-			if len(allTopics) > 0 {
-				currentStrategy = topicStrategies[allTopics[0]].Strategy
-			}
-		} else {
-			currentStrategy = topicStrategies[topic].Strategy
-		}
-
-		pickerTable := tview.NewTable()
-		pickerTable.SetBorder(true)
-		pickerTable.SetTitle(" Strategy ")
-		pickerTable.SetSelectable(true, false)
-		pickerTable.SetSelectedStyle(selectedStyle)
-
-		initialRow := 0
-		for i, label := range pickerLabels {
-			pickerTable.SetCell(i, 0, tview.NewTableCell(label).SetSelectable(true))
-			if pickerValues[i] == currentStrategy {
-				initialRow = i
-			}
-		}
-		pickerTable.Select(initialRow, 0)
-
-		closePicker := func() {
-			innerPages.RemovePage("picker")
-			app.SetFocus(table)
-		}
-
-		pickerTable.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-			switch event.Key() {
-			case tcell.KeyEsc:
-				closePicker()
-				return nil
-			case tcell.KeyEnter:
-				selectedIdx, _ := pickerTable.GetSelection()
-				strategy := pickerValues[selectedIdx]
-				applyStrategy(topic, row, strategy)
-				closePicker()
-				if strategy == "to-timestamp" || strategy == "to-offset" {
-					if input, ok := valueInputs[row]; ok {
-						app.SetFocus(input)
-					}
-				}
-				return nil
-			}
-			return event
-		})
-
-		const pickerH = 7  // 5 strategy rows + 2 border lines
-		const pickerW = 20 // wide enough for all strategy labels + borders
-		pickerWrapper := tview.NewFlex().SetDirection(tview.FlexColumn).
-			AddItem(nil, 0, 1, false).
-			AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
-				AddItem(nil, 0, 0, false).
-				AddItem(pickerTable, pickerH, 0, true).
-				AddItem(nil, 0, 1, false),
-				pickerW, 0, true).
-			AddItem(nil, 1, 0, false)
-
-		innerPages.AddPage("picker", pickerWrapper, true, true)
-		app.SetFocus(pickerTable)
-	}
-
-	table.SetSelectionChangedFunc(func(row, _ int) {
-		syncValueCell(row)
+	app.WithTopicPartitionCounts(func(counts map[string]int) {
+		app.editConsumerGroupOffsets(name, committed, counts, granularity)
 	})
+}
 
-	table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		row, _ := table.GetSelection()
-		switch {
-		case event.Key() == tcell.KeyEsc:
-			app.HideModalPage(ResetOffset)
+// offsetsGranularity selects which of the two offsets documents the editor is handed. Both
+// parse the same way — a topic may always be narrowed to a partition mapping by hand — so
+// this only decides what the buffer starts as.
+type offsetsGranularity int
 
-		case event.Key() == tcell.KeyEnter:
-			if row > 0 {
-				topic := table.GetCell(row, 0).Text
-				if topic == newTopicRowName {
-					if input, ok := valueInputs[row]; ok {
-						app.SetFocus(input)
-					}
-				} else {
-					openStrategyPicker(topic, row)
-				}
-			}
-			return nil
+const (
+	// offsetsByTopic renders one value per topic, covering all of its partitions.
+	offsetsByTopic offsetsGranularity = iota
+	// offsetsByPartition renders every committed partition with its own offset.
+	offsetsByPartition
+)
 
-		case event.Key() == tcell.KeyTab:
-			if row > 0 {
-				topic := table.GetCell(row, 0).Text
-				if topic == newTopicRowName {
-					if input, ok := valueInputs[row]; ok {
-						app.SetFocus(input)
-					}
-				}
-			}
+// editConsumerGroupOffsets hands the group's committed offsets to the editor as a YAML
+// document, resolves what comes back against the cluster, and opens a confirmation page
+// with the resulting per-partition changes. Nothing is committed until that page is
+// confirmed. Must be called from the UI goroutine.
+func (app *App) editConsumerGroupOffsets(
+	group string,
+	committed []client.CommittedOffset,
+	partitionCounts map[string]int,
+	granularity offsetsGranularity,
+) {
+	var (
+		buf []byte
+		err error
+	)
+	if granularity == offsetsByTopic {
+		buf, err = renderConsumerGroupTopicOffsetsDocument(group, committed)
+	} else {
+		buf, err = renderConsumerGroupOffsetsDocument(group, committed)
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("failed to render consumer group offsets document")
+		SendStatusWithDefaultTTL("[red]failed to render offsets document")
+		return
+	}
 
-		case IsKey(event, 'e'):
-			if row > 0 {
-				topic := table.GetCell(row, 0).Text
-				if topic != newTopicRowName {
-					checkTopic := topic
-					if topic == allTopicsRowName && len(allTopics) > 0 {
-						checkTopic = allTopics[0]
-					}
-					if ts, ok := topicStrategies[checkTopic]; ok &&
-						(ts.Strategy == "to-timestamp" || ts.Strategy == "to-offset") {
-						if input, ok := valueInputs[row]; ok {
-							app.SetFocus(input)
-						}
-					}
-				}
-			}
+	edited, ok := app.OpenInEditor("cgroup-offsets-*.yaml", buf)
+	if !ok {
+		return
+	}
 
-		case event.Key() == tcell.KeyCtrlB:
-			// Commit all value inputs before validation.
-			for r := range valueInputs {
-				commitValueInput(r)
-			}
+	targets, err := parseConsumerGroupOffsetsDocument(edited, group, committed, partitionCounts)
+	if err != nil {
+		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		return
+	}
+	if len(targets) == 0 {
+		SendStatusWithDefaultTTL("nothing to change")
+		return
+	}
 
-			hasStrategy := false
-			for _, ts := range topicStrategies {
-				if ts.Strategy != "" {
-					hasStrategy = true
-					break
-				}
-			}
-			if !hasStrategy {
-				SendStatusWithDefaultTTL("[red]at least one topic must have a strategy")
-				return event
-			}
-			if len(invalidValues) > 0 {
-				topics := make([]string, 0, len(invalidValues))
-				for t := range invalidValues {
-					topics = append(topics, t)
-				}
-				sort.Strings(topics)
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]invalid value for topics: %s",
-					strings.Join(topics, ", ")))
-				return event
-			}
-			app.ResetConsumerGroupOffsetBatchResultHandler(groupName, topicStrategies)
-			app.HideModalPage(ResetOffset)
+	app.ResolveConsumerGroupOffsets(group, committed, targets)
+}
+
+// ResolveConsumerGroupOffsets turns the edited targets into concrete offsets — watermarks
+// and timestamps are looked up on the cluster — and hands them to the confirmation page.
+func (app *App) ResolveConsumerGroupOffsets(
+	group string,
+	committed []client.CommittedOffset,
+	targets map[client.TopicPartition]client.OffsetTarget,
+) {
+	resultCh := make(chan map[client.TopicPartition]client.ResolvedOffset)
+	errorCh := make(chan error)
+
+	c := app.GetCurrentKafkaClient()
+	SendStatusInfinite("resolving target offsets")
+	c.ResolveOffsetTargets(targets, resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
+
+	go func() {
+		defer cancel()
+
+		select {
+		case resolved := <-resultCh:
+			app.QueueUpdateDraw(func() {
+				app.ConsumerGroupOffsetsConfirm(group, committed, targets, resolved)
+			})
+		case err := <-errorCh:
+			log.Error().Err(err).Msg("failed to resolve target offsets")
+			SendStatusWithDefaultTTL(
+				fmt.Sprintf("[red]failed to resolve target offsets: %s", err.Error()),
+			)
+		case <-ctx.Done():
+			log.Error().Msg("timeout while resolving target offsets")
+			SendStatusWithDefaultTTL("[red]timeout while resolving target offsets")
 		}
+	}()
+}
+
+// ConsumerGroupOffsetsConfirm shows the pending per-partition changes and commits them on
+// Ctrl+Enter. Targets that fall outside their partition's log are refused here rather than
+// sent: the broker accepts an out-of-range commit and the consumer then silently overrides
+// it via auto.offset.reset. It reports whether the confirmation page opened — a refusal
+// leaves the caller's UI as it was, with the reason on the status line.
+func (app *App) ConsumerGroupOffsetsConfirm(
+	group string,
+	committed []client.CommittedOffset,
+	targets map[client.TopicPartition]client.OffsetTarget,
+	resolved map[client.TopicPartition]client.ResolvedOffset,
+) bool {
+	changes := offsetChanges(committed, targets, resolved)
+	if len(changes) == 0 {
+		SendStatusWithDefaultTTL("no changes detected")
+		return false
+	}
+	if invalid := outOfRangeChanges(changes); len(invalid) > 0 {
+		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", outOfRangeMessage(invalid, resolved)))
+		return false
+	}
+
+	messageText := tview.NewTextView().
+		SetText(renderOffsetChanges(group, changes)).
+		SetTextAlign(tview.AlignLeft).
+		SetDynamicColors(false)
+
+	messageText.SetBorder(true).
+		SetTitle(fmt.Sprintf(" Confirm Offsets: %s ", group)).
+		SetBorderPadding(0, 0, 1, 1)
+
+	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if IsCtrlEnter(event) {
+			// Re-checked at apply time: the mode can have been toggled while the page stood
+			// open. The page itself is the confirmation, so nothing more is asked.
+			if !app.Allowed() {
+				return nil
+			}
+			app.SetConsumerGroupOffsetsResultHandler(group, changes)
+			app.RemoveTransientPage(OffsetsConfirm)
+			return nil
+		}
+
+		if event.Key() == tcell.KeyEsc {
+			app.RemoveTransientPage(OffsetsConfirm)
+			return nil
+		}
+
 		return event
 	})
 
-	// ── Value input field handlers ───────────────────────────────────────
-	wireValueInput := func(row int, input *tview.InputField) {
-		input.SetDoneFunc(func(_ tcell.Key) {
-			commitValueInput(row)
-			app.SetFocus(table)
-		})
-		input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-			switch {
-			case event.Key() == tcell.KeyEsc:
-				commitValueInput(row)
-				app.SetFocus(table)
-				return nil
-			case event.Key() == tcell.KeyEnter:
-				commitValueInput(row)
-				app.SetFocus(table)
-				return nil
-			case event.Key() == tcell.KeyTab || event.Key() == tcell.KeyBacktab:
-				commitValueInput(row)
-				nextRow := row + 1
-				if event.Key() == tcell.KeyBacktab {
-					nextRow = row - 1
-				}
-				if nextRow >= 1 && nextRow < table.GetRowCount() {
-					if nextInput, ok := valueInputs[nextRow]; ok {
-						app.SetFocus(nextInput)
-						return nil
-					}
-				}
-				app.SetFocus(table)
-				return nil
-			}
-			return event
-		})
+	ClearStatus()
+	app.AddTransientPage(OffsetsConfirm, messageText, OffsetsConfirmPageMenu)
+
+	return true
+}
+
+// SetConsumerGroupOffsetsResultHandler commits the confirmed changes and refreshes the
+// consumer group page.
+func (app *App) SetConsumerGroupOffsetsResultHandler(group string, changes []offsetChange) {
+	offsets := make(map[client.TopicPartition]int64, len(changes))
+	for _, change := range changes {
+		offsets[change.TopicPartition] = change.To
 	}
 
-	newTopicInputHandler := func(input *tview.InputField) {
-		input.SetDoneFunc(func(key tcell.Key) {
-			if key == tcell.KeyEnter {
-				newTopicName := strings.TrimSpace(input.GetText())
-				if newTopicName == "" {
-					SendStatusWithDefaultTTL("[red]topic name cannot be empty")
-					return
-				}
-				for _, t := range allTopics {
-					if t == newTopicName {
-						SendStatusWithDefaultTTL("[red]topic already exists in the list")
-						return
-					}
-				}
-				// + new topic row is always at len(allTopics)+2 before the append.
-				insertRow := len(allTopics) + 2
-				allTopics = append(allTopics, newTopicName)
-				topicStrategies[newTopicName] = client.TopicStrategy{}
+	resultCh := make(chan bool)
+	errorCh := make(chan error)
 
-				// Insert a new table row before "+ new topic", shifting it down.
-				table.InsertRow(insertRow)
-				table.SetCell(insertRow, 0, tview.NewTableCell(newTopicName).SetSelectable(true))
-				table.SetCell(insertRow, 1, tview.NewTableCell("").SetSelectable(false))
+	c := app.GetCurrentKafkaClient()
+	SendStatusInfinite("committing consumer group offsets")
+	c.SetConsumerGroupOffsets(group, offsets, resultCh, errorCh)
+	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
-				// Create a value InputField for the new topic row (no placeholder by default).
-				newInput := tview.NewInputField().
-					SetFieldWidth(30).
-					SetFieldStyle(
-						tcell.StyleDefault.Foreground(
-							tcell.GetColor(app.Colors.Karat.Foreground),
-						).Background(
-							tcell.GetColor(app.Colors.Karat.Background),
-						)).
-					SetPlaceholderStyle(
-						tcell.StyleDefault.Background(
-							tcell.GetColor(app.Colors.Karat.Background),
-						))
+	go func() {
+		defer cancel()
 
-				// Slide the "+ new topic" input down in the map and register the new input.
-				valueInputs[insertRow+1] = valueInputs[insertRow]
-				valueInputs[insertRow] = newInput
-
-				// Reorder the value column flex.
-				valueColumnFlex.RemoveItem(input)
-				valueColumnFlex.AddItem(newInput, 1, 0, false)
-				valueColumnFlex.AddItem(input, 1, 0, false)
-
-				wireValueInput(insertRow, newInput)
-
-				input.SetText("")
-			}
-			app.SetFocus(table)
-		})
-	}
-
-	for row, input := range valueInputs {
-		if row == len(allTopics)+2 { // new topic row
-			newTopicInputHandler(input)
-			continue
+		select {
+		case <-resultCh:
+			SendStatus(
+				fmt.Sprintf(
+					"offsets for '%s' committed (%d partition%s)",
+					group,
+					len(changes),
+					pluralSuffix(len(changes)),
+				),
+				2*time.Second,
+				false,
+			)
+			Publish(CgroupsChannel, GetCgroupEventType, Payload{group, true})
+		case err := <-errorCh:
+			log.Error().Err(err).Msg("failed to commit consumer group offsets")
+			SendStatusWithDefaultTTL(
+				fmt.Sprintf("[red]failed to commit offsets: %s", err.Error()),
+			)
+		case <-ctx.Done():
+			log.Error().Msg("timeout while committing consumer group offsets")
+			SendStatusWithDefaultTTL("[red]timeout while committing offsets")
 		}
-
-		wireValueInput(row, input)
-	}
-
-	// ── Layout ────────────────────────────────────────────────────────────
-	mainFlex := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(innerPages, 0, 1, true)
-	mainFlex.SetTitle(fmt.Sprintf(" Reset Offsets: %s ", groupName))
-	mainFlex.SetBorder(true)
-
-	modal := util.NewTopicModal(mainFlex)
-	app.Layout.PagesRegistry.UI.Pages.AddPage(ResetOffset, modal, true, false)
+	}()
 }
 
 // parseTimestamp parses s as "2006-01-02T15:04:05.000", falling back to RFC3339.
@@ -1065,174 +781,6 @@ func parseTimestamp(s string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Parse(time.RFC3339, s)
-}
-
-// allTopicsRowName is the special row name that applies strategy to all topics.
-const allTopicsRowName = "__all topics"
-
-// newTopicRowName is the special row name for adding a new topic.
-const newTopicRowName = "+ new topic"
-
-func (app *App) newOffsetBatchTable(
-	topics []string,
-	labelColor tcell.Color,
-	selectedStyle tcell.Style,
-) (*tview.Table, map[int]*tview.InputField, *tview.Flex, *tview.Flex) {
-	mkHeader := func(text string) *tview.TableCell {
-		return tview.NewTableCell(text).SetSelectable(false).SetTextColor(labelColor)
-	}
-
-	table := tview.NewTable()
-	table.SetBorder(false)
-	table.SetBorderPadding(0, 0, 1, 0)
-	table.SetSelectable(true, false)
-	table.SetFixed(1, 0)
-	table.SetSelectedStyle(selectedStyle)
-	table.SetCell(0, 0, mkHeader("Topic"))
-	table.SetCell(0, 1, mkHeader("Strategy"))
-
-	valueInputs := make(map[int]*tview.InputField)
-	valueColumnFlex := tview.NewFlex().SetDirection(tview.FlexRow)
-
-	// Header for value column.
-	valueHeaderLabel := tview.NewTableCell("Value").
-		SetTextColor(labelColor).
-		SetSelectable(false).
-		SetAlign(tview.AlignLeft)
-	valueHeaderTable := tview.NewTable()
-	valueHeaderTable.SetCell(0, 0, valueHeaderLabel)
-	valueColumnFlex.AddItem(valueHeaderTable, 1, 0, false)
-
-	// "__all topics" row.
-	row := 1
-	table.SetCell(row, 0, tview.NewTableCell(allTopicsRowName).SetSelectable(true))
-	table.SetCell(row, 1, tview.NewTableCell("").SetSelectable(false))
-
-	valueInput := tview.NewInputField().
-		SetFieldWidth(30).
-		SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			)).
-		SetPlaceholderStyle(
-			tcell.StyleDefault.Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			))
-	valueInputs[row] = valueInput
-	valueColumnFlex.AddItem(valueInput, 1, 0, false)
-
-	for i, topic := range topics {
-		row = i + 2
-		table.SetCell(row, 0, tview.NewTableCell(topic).SetSelectable(true))
-		table.SetCell(row, 1, tview.NewTableCell("").SetSelectable(false))
-
-		valueInput := tview.NewInputField().
-			SetFieldWidth(30).
-			SetFieldStyle(
-				tcell.StyleDefault.Foreground(
-					tcell.GetColor(app.Colors.Karat.Foreground),
-				).Background(
-					tcell.GetColor(app.Colors.Karat.Background),
-				)).
-			SetPlaceholderStyle(
-				tcell.StyleDefault.Background(
-					tcell.GetColor(app.Colors.Karat.Background),
-				))
-		valueInputs[row] = valueInput
-		valueColumnFlex.AddItem(valueInput, 1, 0, false)
-	}
-
-	// "+ new topic" row for adding custom topics
-	newTopicRow := len(topics) + 2
-	table.SetCell(newTopicRow, 0, tview.NewTableCell(newTopicRowName).SetSelectable(true))
-	table.SetCell(newTopicRow, 1, tview.NewTableCell("").SetSelectable(false))
-
-	newTopicInput := tview.NewInputField().
-		SetFieldWidth(30).
-		SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			)).
-		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder))
-	valueInputs[newTopicRow] = newTopicInput
-	valueColumnFlex.AddItem(newTopicInput, 1, 0, false)
-
-	container := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(table, 0, 2, true).
-		AddItem(tview.NewBox(), 1, 0, false).
-		AddItem(valueColumnFlex, 0, 1, false)
-
-	return table, valueInputs, valueColumnFlex, container
-}
-
-// topicToRow returns the table row index for a given topic name.
-func topicToRow(table *tview.Table, topic string) int {
-	for row := 0; row < table.GetRowCount(); row++ {
-		if cell := table.GetCell(row, 0); cell != nil && cell.Text == topic {
-			return row
-		}
-	}
-	return -1
-}
-
-// ResetConsumerGroupOffsetBatchResultHandler performs batch offset reset and shows the result status.
-func (app *App) ResetConsumerGroupOffsetBatchResultHandler(
-	group string,
-	topicStrategies map[string]client.TopicStrategy,
-) {
-	resultCh := make(chan bool)
-	errorCh := make(chan error)
-
-	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("resetting consumer group offsets")
-	c.BatchResetConsumerGroupOffsets(group, topicStrategies, resultCh, errorCh)
-	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
-
-	go func() {
-		for {
-			select {
-			case <-resultCh:
-				topicCount := len(topicStrategies)
-				msg := fmt.Sprintf("offsets for '%s' have been reset", group)
-				if topicCount == 1 {
-					for topic := range topicStrategies {
-						if topic != "" {
-							msg = fmt.Sprintf(
-								"offsets for '%s' have been reset [%s]",
-								group,
-								topic,
-							)
-						}
-						break
-					}
-				} else if topicCount > 1 {
-					msg = fmt.Sprintf(
-						"offsets for '%s' have been reset [%d topics]",
-						group,
-						topicCount,
-					)
-				}
-				SendStatus(msg, 2*time.Second, false)
-				cancel()
-				return
-			case err := <-errorCh:
-				log.Error().Err(err).Msg("failed to reset consumer group offsets")
-				SendStatusWithDefaultTTL(
-					fmt.Sprintf("[red]failed to reset offsets: %s", err.Error()),
-				)
-				cancel()
-				return
-			case <-ctx.Done():
-				log.Error().Msg("timeout while resetting consumer group offsets")
-				SendStatusWithDefaultTTL("[red]timeout while resetting consumer group offsets")
-				return
-			}
-		}
-	}()
 }
 
 // CopyConsumerGroupModal creates and registers the "copy consumer group" modal.
@@ -1520,34 +1068,12 @@ func filterConsumerGroupsTable(
 	}
 }
 
-// DeleteConsumerGroup shows a confirmation modal for deleting a consumer group.
+// DeleteConsumerGroup asks in the status line before deleting a consumer group.
 func (app *App) DeleteConsumerGroup(groupName string) {
-	messageText := tview.NewTextView().
-		SetText(fmt.Sprintf("Consumer group [red::b]%s[-::-] will be deleted. Confirm?", groupName)).
-		SetTextAlign(tview.AlignCenter).
-		SetDynamicColors(true)
-
-	messageText.SetBorder(true).
-		SetTitle(" Confirm Deletion ").
-		SetBorderPadding(0, 0, 1, 1)
-
-	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if IsCtrlEnter(event) {
-			app.DeleteConsumerGroupResultHandler(groupName)
-			app.HideModalPage(DeleteConsumerGroup)
-			Publish(CgroupsChannel, GetCgroupsEventType, Payload{nil, true})
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.HideModalPage(DeleteConsumerGroup)
-		}
-
-		return event
-	})
-
-	modal := util.NewConfirmationModal(messageText)
-	app.Layout.PagesRegistry.UI.Pages.AddPage(DeleteConsumerGroup, modal, true, true)
-	app.Layout.PagesRegistry.UI.Pages.ShowPage(DeleteConsumerGroup)
+	app.Modify(
+		fmt.Sprintf("delete consumer group '%s'?", groupName),
+		func() { app.DeleteConsumerGroupResultHandler(groupName) },
+	)
 }
 
 // DeleteConsumerGroupResultHandler performs the consumer group deletion.
@@ -1569,6 +1095,8 @@ func (app *App) DeleteConsumerGroupResultHandler(name string) {
 					2*time.Second,
 					false,
 				)
+				cluster := app.Selected.Cluster.Name
+				app.QueueUpdateDraw(func() { app.RemovePagesFor(cluster, name) })
 				Publish(CgroupsChannel, GetCgroupsEventType, Payload{nil, true})
 				cancel()
 				return

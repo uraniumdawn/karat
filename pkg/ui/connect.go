@@ -6,7 +6,6 @@ package ui
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -47,7 +46,7 @@ func (app *App) RunConnectEventHandler(ctx context.Context, in chan Event) {
 
 // addConnectTableHeader adds a fixed header row (row 0) with label-coloured cells.
 func addConnectTableHeader(table *tview.Table, labelColor tcell.Color) {
-	util.SetTableHeaders(table, labelColor, "Name", "URL", "Mode")
+	util.SetTableHeaders(table, labelColor, "Name", "URL", "Active")
 }
 
 // NewConnectTable creates a table displaying connect clusters.
@@ -70,14 +69,11 @@ func (app *App) NewConnectTable() *tview.Table {
 
 	row := 1
 	for _, connect := range app.Config.Karat.Connect {
-		modeText := connect.Mode
-		if modeText == "" {
-			modeText = "regular"
-		}
+		active := app.isConnectSelected(app.Selected) && app.Selected.Connect.Name == connect.Name
 		table.
 			SetCell(row, 0, tview.NewTableCell(connect.Name)).
 			SetCell(row, 1, tview.NewTableCell(connect.URL)).
-			SetCell(row, 2, tview.NewTableCell(modeText))
+			SetCell(row, 2, tview.NewTableCell(activeMarkerFor(active)))
 		row++
 	}
 	return table
@@ -91,35 +87,12 @@ func (app *App) ConnectTableInputHandler(ct *tview.Table) {
 		connect := app.Connects[connectName]
 
 		if event.Key() == tcell.KeyEnter {
-			app.SelectConnect(connect, true)
-			ClearStatus()
-		}
-
-		if event.Key() == tcell.KeyTab {
 			if connect == nil {
 				return event
 			}
-			if connect.Mode == "read-only" {
-				connect.Mode = ""
-			} else {
-				connect.Mode = "read-only"
-			}
-			modeText := connect.Mode
-			if modeText == "" {
-				modeText = "regular"
-			}
-			ct.GetCell(row, 2).SetText(modeText)
-			if app.isConnectSelected(app.Selected) && app.Selected.Connect.Name == connectName {
-				app.Layout.SetSelected(
-					app.Selected.Cluster,
-					app.Selected.SchemaRegistry,
-					app.Selected.Connect,
-				)
-			}
-			if err := app.Config.Save(); err != nil {
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to save config: %s", err.Error()))
-			}
-			return nil
+			app.SelectConnect(connect, true)
+			util.SetColumnMarker(ct, 2, row, activeMarker)
+			ClearStatus()
 		}
 
 		return event

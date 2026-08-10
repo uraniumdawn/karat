@@ -39,8 +39,11 @@ register_schema() {
   fi
 }
 
-# Register specific schemas
-register_schema /schemas/ad-impression.avsc ad-impressions-value
-register_schema /schemas/ad-click.avsc ad-clicks-value
+# The data generator registers the very same files at startup; registration is idempotent, so
+# whichever runs first decides the schema id and the other one gets it back unchanged.
+register_schema /schemas/stream-alpha-key.avsc stream-alpha-key
+register_schema /schemas/stream-alpha-value.avsc stream-alpha-value
+register_schema /schemas/stream-beta-key.avsc stream-beta-key
+register_schema /schemas/stream-beta-value.avsc stream-beta-value
 
 echo "Schemas registered successfully."

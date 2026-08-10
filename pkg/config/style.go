@@ -67,12 +67,9 @@ func LoadColorConfig(stylePath string) (*ColorConfig, error) {
 		return loadDefaultColorConfig()
 	}
 
-	if strings.HasPrefix(stylePath, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("cannot resolve ~: %w", err)
-		}
-		stylePath = filepath.Join(home, stylePath[2:])
+	stylePath, err := resolveStylePath(stylePath)
+	if err != nil {
+		return nil, err
 	}
 
 	override, err := readStyleFile(stylePath)
@@ -87,6 +84,31 @@ func LoadColorConfig(stylePath string) (*ColorConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// resolveStylePath turns karat.style into a path on disk: "~/" is expanded, an absolute path is
+// taken as written, and anything else is read from the config directory — the same place the
+// style file is copied to, so naming it is enough.
+func resolveStylePath(stylePath string) (string, error) {
+	if strings.HasPrefix(stylePath, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot resolve ~: %w", err)
+		}
+
+		return filepath.Join(home, stylePath[2:]), nil
+	}
+
+	if filepath.IsAbs(stylePath) {
+		return stylePath, nil
+	}
+
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dir, stylePath), nil
 }
 
 func readStyleFile(path string) ([]byte, error) {

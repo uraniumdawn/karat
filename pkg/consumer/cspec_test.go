@@ -33,7 +33,6 @@ func TestParseArgs(t *testing.T) {
 		wantKeySerdes   Serdes
 		wantValueSerdes Serdes
 		wantSRName      string
-		wantGroup       string
 		wantFilter      string
 		wantError       bool
 	}{
@@ -314,15 +313,7 @@ func TestParseArgs(t *testing.T) {
 			wantValueSerdes: Serdes{Kind: SerdesAvro},
 			wantSRName:      "my-sr",
 		},
-		// -g consumer group
-		{
-			name:      "-g sets consumer group",
-			input:     "-g my-group",
-			wantFrom:  tail100,
-			wantCount: 100,
-			wantGroup: "my-group",
-		},
-		{name: "-g with no value returns error", input: "-g", wantError: true},
+		{name: "-g is not a flag any more", input: "-g my-group", wantError: true},
 		// | filter
 		{
 			name:       "| pattern sets filter",
@@ -428,9 +419,6 @@ func TestParseArgs(t *testing.T) {
 			}
 			if got.SRName != tc.wantSRName {
 				t.Errorf("SRName: got %q, want %q", got.SRName, tc.wantSRName)
-			}
-			if got.Group != tc.wantGroup {
-				t.Errorf("Group: got %q, want %q", got.Group, tc.wantGroup)
 			}
 			if got.Filter != tc.wantFilter {
 				t.Errorf("Filter: got %q, want %q", got.Filter, tc.wantFilter)

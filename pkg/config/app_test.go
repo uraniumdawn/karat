@@ -5,6 +5,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -25,7 +27,7 @@ func TestFeaturesDefaultToEnabled(t *testing.T) {
 	}
 }
 
-// The defaults come from default_config.yaml, not from featureEnabled's nil fallback.
+// The defaults come from default_config.yaml, not from the nil fallback in featureEnabled.
 func TestFeatureDefaultsComeFromDefaultConfig(t *testing.T) {
 	defaults, err := loadDefaultAppConfig()
 	if err != nil {
@@ -37,6 +39,26 @@ func TestFeatureDefaultsComeFromDefaultConfig(t *testing.T) {
 	}
 	if defaults.Karat.Features.ConsumerGroupLag == nil {
 		t.Error("default_config.yaml should set karat.features.consumer_group_lag")
+	}
+}
+
+// karat.editor is the only place the editor command line comes from, so the defaults must
+// carry a usable one, and a user entry must win over it.
+func TestEditorDefaultsToVim(t *testing.T) {
+	cfg, err := mergeAppConfig([]byte("karat:\n  clusters: []\n"))
+	if err != nil {
+		t.Fatalf("mergeAppConfig() error = %v", err)
+	}
+	if got := cfg.Editor(); got != "vim" {
+		t.Errorf("Editor() = %q, want %q by default", got, "vim")
+	}
+
+	cfg, err = mergeAppConfig([]byte("karat:\n  editor: \"code --wait\"\n"))
+	if err != nil {
+		t.Fatalf("mergeAppConfig() error = %v", err)
+	}
+	if got := cfg.Editor(); got != "code --wait" {
+		t.Errorf("Editor() = %q, want %q", got, "code --wait")
 	}
 }
 
@@ -134,5 +156,31 @@ func TestDisabledFeatureSurvivesSaveRoundTrip(t *testing.T) {
 	}
 	if !reloaded.TopicSizeEnabled() {
 		t.Error("topic size should stay enabled after a save/reload round trip")
+	}
+}
+
+// A first run has no config file. Refusing to start would leave the user with nothing to edit;
+// karat comes up on the built-in defaults and writes them out instead.
+func TestLoadAppConfigWithoutAFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(KaratEnvConfigDir, dir)
+
+	cfg, err := LoadAppConfig()
+	if err != nil {
+		t.Fatalf("LoadAppConfig() error = %v, want a default config", err)
+	}
+	if cfg.Mode() != Confirm {
+		t.Errorf("Mode() = %q, want the default %q", cfg.Mode(), Confirm)
+	}
+	if got := cfg.GetAPICallTimeout(); got == 0 {
+		t.Error("the API timeout was left at zero")
+	}
+
+	written, err := os.ReadFile(filepath.Join(dir, ".config", "karat", "config.yaml"))
+	if err != nil {
+		t.Fatalf("no config file was written: %v", err)
+	}
+	if !strings.Contains(string(written), "mode: confirm") {
+		t.Errorf("the written config does not carry the defaults:\n%s", written)
 	}
 }

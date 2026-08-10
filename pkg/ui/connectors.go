@@ -22,6 +22,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/sahilm/fuzzy"
 
+	"github.com/uraniumdawn/karat/pkg/config"
 	"github.com/uraniumdawn/karat/pkg/connect"
 	"github.com/uraniumdawn/karat/pkg/util"
 )
@@ -81,14 +82,12 @@ func (app *App) RunConnectorsEventHandler(ctx context.Context, in chan Event) {
 					connectorName := event.Payload.Data.(string)
 					app.QueueUpdateDraw(func() {
 						app.DeleteConnector(connectorName)
-						app.ShowModalPage(DeleteConnector)
 					})
 
 				case DeleteConnectorOffsetsEventType:
 					connectorName := event.Payload.Data.(string)
 					app.QueueUpdateDraw(func() {
 						app.DeleteConnectorOffsets(connectorName)
-						app.ShowModalPage(DeleteConnectorOffsets)
 					})
 
 				case CreateConnectorEventType:
@@ -139,8 +138,10 @@ func (app *App) Connectors() {
 							)
 						}
 						if IsKey(event, 'd') {
-							row, _ := table.GetSelection()
-							connectorName := table.GetCell(row, 0).Text
+							connectorName, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
 							Publish(
 								ConnectorsChannel,
 								GetConnectorEventType,
@@ -149,36 +150,31 @@ func (app *App) Connectors() {
 						}
 
 						if IsKey(event, 'a') {
-							if app.IsCurrentConnectReadOnly() {
-								SendStatusWithDefaultTTL(
-									"[red]cluster is in read-only mode",
-								)
+							if !app.Allowed() {
 								return event
 							}
-							row, _ := table.GetSelection()
-							connectorName := table.GetCell(row, 0).Text
-							connectorState := table.GetCell(row, 1).Text
+							connectorName, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
+							connectorState, _ := selectedRow(table, 1, afterHeaderRow)
 							app.ConnectorActionsModal(connectorName, connectorState)
 							app.ShowModalPage(ConnectorActions)
 						}
 
 						if IsKey(event, 'e') {
-							if app.IsCurrentConnectReadOnly() {
-								SendStatusWithDefaultTTL(
-									"[red]cluster is in read-only mode",
-								)
+							if !app.Allowed() {
 								return event
 							}
-							row, _ := table.GetSelection()
-							connectorName := table.GetCell(row, 0).Text
+							connectorName, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
 							app.EditConnectorConfig(connectorName)
 						}
 
 						if IsKey(event, 'n') {
-							if app.IsCurrentConnectReadOnly() {
-								SendStatusWithDefaultTTL(
-									"[red]cluster is in read-only mode",
-								)
+							if !app.Allowed() {
 								return event
 							}
 							Publish(
@@ -189,14 +185,13 @@ func (app *App) Connectors() {
 						}
 
 						if event.Key() == tcell.KeyCtrlD {
-							if app.IsCurrentConnectReadOnly() {
-								SendStatusWithDefaultTTL(
-									"[red]cluster is in read-only mode",
-								)
+							if !app.Allowed() {
 								return event
 							}
-							row, _ := table.GetSelection()
-							connectorName := table.GetCell(row, 0).Text
+							connectorName, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
 							Publish(
 								ConnectorsChannel,
 								DeleteConnectorEventType,
@@ -220,6 +215,7 @@ func (app *App) Connectors() {
 								labelColor,
 							)
 							table.ScrollToBeginning()
+							app.RestoreSelection(pageKey, table, afterHeaderRow)
 							return event
 						}
 
@@ -239,6 +235,7 @@ func (app *App) Connectors() {
 								labelColor,
 							)
 							table.ScrollToBeginning()
+							app.RestoreSelection(pageKey, table, afterHeaderRow)
 							return event
 						}
 
@@ -258,6 +255,7 @@ func (app *App) Connectors() {
 								labelColor,
 							)
 							table.ScrollToBeginning()
+							app.RestoreSelection(pageKey, table, afterHeaderRow)
 							return event
 						}
 
@@ -277,6 +275,7 @@ func (app *App) Connectors() {
 								labelColor,
 							)
 							table.ScrollToBeginning()
+							app.RestoreSelection(pageKey, table, afterHeaderRow)
 							return event
 						}
 
@@ -285,10 +284,20 @@ func (app *App) Connectors() {
 
 					app.AddToPagesRegistry(pageKey, table, ConnectorsPageMenu, true)
 
+					// A refresh — after an action, or Ctrl+U — builds a new table: without
+					// this the cursor lands on the first row, and the next action opens on a
+					// connector the user did not pick.
+					app.RestoreSelection(pageKey, table, afterHeaderRow)
+					app.TrackSelection(pageKey, table, afterHeaderRow)
+
 					app.AssignSearch(func(text string) {
 						filterConnectorsTable(table, connectorNames, statuses, text, labelColor)
 						util.SetSearchableTableTitle(table, title, text)
 						table.ScrollToBeginning()
+						// The rows the cursor pointed at are gone; without this the selection
+						// is left past the end of the filtered table and every row action
+						// reads an empty cell.
+						app.RestoreSelection(pageKey, table, afterHeaderRow)
 					})
 
 					ClearStatus()
@@ -297,7 +306,7 @@ func (app *App) Connectors() {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to list connectors")
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to list connectors: %s", err.Error()))
+				SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
 				cancel()
 				return
 			case <-ctx.Done():
@@ -377,7 +386,7 @@ func (app *App) ConnectorDetail(name string) {
 					}
 
 					isRunning := strings.ToUpper(detail.Status.Connector.State) == "RUNNING"
-					isReadOnly := app.IsCurrentConnectReadOnly()
+					isReadOnly := app.Config.Mode() == config.ReadOnly
 					descMenu := ConnectorDescriptionPageMenu
 					if isRunning && !isReadOnly {
 						descMenu = ConnectorDescriptionPageMenuRunning
@@ -664,7 +673,7 @@ func (app *App) openEditorForConfig(name string, config map[string]interface{}) 
 	// Check if content changed (trim trailing whitespace so editor newline conventions don't matter)
 	newHash := sha256.Sum256(bytes.TrimRight(newContent, "\r\n\t "))
 	if bytes.Equal(oldHash[:], newHash[:]) {
-		SendStatusWithDefaultTTL("[yellow]no changes detected")
+		SendStatusWithDefaultTTL("no changes detected")
 		return
 	}
 
@@ -699,24 +708,25 @@ func (app *App) ConnectorConfigConfirm(name string, newConfig map[string]interfa
 
 	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if IsCtrlEnter(event) {
-			if app.IsCurrentConnectReadOnly() {
-				SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+			// Re-checked at apply time: the mode can have been toggled while the page stood
+			// open. The page itself is the confirmation, so nothing more is asked.
+			if !app.Allowed() {
 				return nil
 			}
 			app.UpdateConnectorConfig(name, newConfig)
-			app.RemoveFromPagesRegistry(ConnectorConfigConfirm)
+			app.RemoveTransientPage(ConnectorConfigConfirm)
 			return nil
 		}
 
 		if event.Key() == tcell.KeyEsc {
-			app.RemoveFromPagesRegistry(ConnectorConfigConfirm)
+			app.RemoveTransientPage(ConnectorConfigConfirm)
 			return nil
 		}
 
 		return event
 	})
 
-	app.AddToPagesRegistry(ConnectorConfigConfirm, messageText, ConnectorConfigEditPageMenu, false)
+	app.AddTransientPage(ConnectorConfigConfirm, messageText, ConnectorConfigEditPageMenu)
 }
 
 // UpdateConnectorConfig applies the updated connector config.
@@ -770,7 +780,7 @@ func (app *App) openEditorForNewConnector() {
 	}
 
 	if len(bytes.TrimSpace(newContent)) == 0 {
-		SendStatusWithDefaultTTL("[yellow]empty file, aborting")
+		SendStatusWithDefaultTTL("empty file, aborting")
 		return
 	}
 
@@ -814,24 +824,25 @@ func (app *App) ConnectorCreateConfirm(name string, config map[string]interface{
 
 	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if IsCtrlEnter(event) {
-			if app.IsCurrentConnectReadOnly() {
-				SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+			// Re-checked at apply time: the mode can have been toggled while the page stood
+			// open. The page itself is the confirmation, so nothing more is asked.
+			if !app.Allowed() {
 				return nil
 			}
 			app.CreateConnectorResultHandler(name, config)
-			app.RemoveFromPagesRegistry(CreateConnector)
+			app.RemoveTransientPage(CreateConnector)
 			return nil
 		}
 
 		if event.Key() == tcell.KeyEsc {
-			app.RemoveFromPagesRegistry(CreateConnector)
+			app.RemoveTransientPage(CreateConnector)
 			return nil
 		}
 
 		return event
 	})
 
-	app.AddToPagesRegistry(CreateConnector, messageText, CreateConnectorPageMenu, false)
+	app.AddTransientPage(CreateConnector, messageText, CreateConnectorPageMenu)
 }
 
 // CreateConnectorResultHandler submits the new connector to Kafka Connect.
@@ -876,7 +887,7 @@ func (app *App) CreateConnectorResultHandler(name string, config map[string]inte
 func (app *App) TaskActionsModal(detail *connect.ConnectorDetail) {
 	tasks := detail.Status.Tasks
 	if len(tasks) == 0 {
-		SendStatusWithDefaultTTL("[yellow]no tasks found for this connector")
+		SendStatusWithDefaultTTL("no tasks found for this connector")
 		return
 	}
 
@@ -950,7 +961,7 @@ func (app *App) TaskActionsModal(detail *connect.ConnectorDetail) {
 				action := taskTable.GetCell(row, 3).Text
 				if action == "" {
 					SendStatusWithDefaultTTL(
-						"[yellow]press Tab to set an action for the selected task",
+						"press Tab to set an action for the selected task",
 					)
 					return event
 				}
@@ -995,7 +1006,7 @@ func (app *App) fetchConnectorOffsets(name string, onSuccess func([]connect.Conn
 			case offsets := <-resultCh:
 				if len(offsets) == 0 {
 					ClearStatus()
-					SendStatusWithDefaultTTL("[yellow]no offsets found for this connector")
+					SendStatusWithDefaultTTL("no offsets found for this connector")
 					cancel()
 					return
 				}
@@ -1039,8 +1050,7 @@ func (app *App) buildConnectorOffsetsModal(name, state string, offsets []connect
 				return nil
 			}
 			if event.Key() == tcell.KeyCtrlD {
-				if app.IsCurrentConnectReadOnly() {
-					SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+				if !app.Allowed() {
 					return event
 				}
 				if !strings.EqualFold(state, "STOPPED") {
@@ -1051,8 +1061,7 @@ func (app *App) buildConnectorOffsetsModal(name, state string, offsets []connect
 				return nil
 			}
 			if IsKey(event, 'c') {
-				if app.IsCurrentConnectReadOnly() {
-					SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+				if !app.Allowed() {
 					return event
 				}
 				app.CopyConnectorOffsetsModal(name, offsets)
@@ -1213,6 +1222,15 @@ var connectorActionVerbForms = map[string]struct{ ing, ed string }{
 	"stop":    {"stopping", "stopped"},
 }
 
+// connectorActionTargetState is the state each action leaves the connector in, and so the
+// state the list waits for before it is refreshed.
+var connectorActionTargetState = map[string]string{
+	"pause":   "PAUSED",
+	"resume":  "RUNNING",
+	"restart": "RUNNING",
+	"stop":    "STOPPED",
+}
+
 // ExecuteConnectorAction executes a connector action (pause, resume, restart, stop).
 func (app *App) ExecuteConnectorAction(name, action string) {
 	action = strings.ToLower(action)
@@ -1254,6 +1272,17 @@ func (app *App) ExecuteConnectorAction(name, action string) {
 					2*time.Second,
 					false,
 				)
+				// The worker accepts the action before it carries it out, so refreshing
+				// straight away redraws the old state and the next action is offered against
+				// it. Wait for the state the action asks for; a connector that has not
+				// settled within the client's own timeout is refreshed anyway, since the list
+				// showing something is better than it showing nothing.
+				if want, ok := connectorActionTargetState[action]; ok {
+					if err := c.WaitForConnectorState(name, want); err != nil {
+						log.Debug().Err(err).Str("connector", name).
+							Msg("connector state did not settle before the refresh")
+					}
+				}
 				Publish(ConnectorsChannel, GetConnectorsEventType, Payload{nil, true})
 				cancel()
 				return
@@ -1275,35 +1304,12 @@ func (app *App) ExecuteConnectorAction(name, action string) {
 	}()
 }
 
-// DeleteConnector shows a confirmation modal for deleting a connector.
+// DeleteConnector asks in the status line before deleting a connector.
 func (app *App) DeleteConnector(connectorName string) {
-	messageText := tview.NewTextView().
-		SetText(fmt.Sprintf("Connector [red::b]%s[-::-] will be deleted. Confirm?", connectorName)).
-		SetTextAlign(tview.AlignCenter).
-		SetDynamicColors(true)
-
-	messageText.SetBorder(true).
-		SetTitle(" Confirm Deletion ").
-		SetBorderPadding(0, 0, 1, 1)
-
-	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if IsCtrlEnter(event) {
-			app.DeleteConnectorResultHandler(connectorName)
-			app.HideModalPage(DeleteConnector)
-			Publish(ConnectorsChannel, GetConnectorsEventType, Payload{nil, true})
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.HideModalPage(DeleteConnector)
-		}
-
-		return event
-	})
-
-	modal := util.NewConfirmationModal(messageText)
-	app.Layout.PagesRegistry.UI.Pages.AddPage(DeleteConnector, modal, true, true)
-	app.Layout.Menu.SetMenu(DeleteConnectorPageMenu)
-	app.Layout.PagesRegistry.UI.Pages.ShowPage(DeleteConnector)
+	app.Modify(
+		fmt.Sprintf("delete connector '%s'?", connectorName),
+		func() { app.DeleteConnectorResultHandler(connectorName) },
+	)
 }
 
 // DeleteConnectorResultHandler performs the connector deletion.
@@ -1325,6 +1331,8 @@ func (app *App) DeleteConnectorResultHandler(name string) {
 					2*time.Second,
 					false,
 				)
+				connectName := app.Selected.Connect.Name
+				app.QueueUpdateDraw(func() { app.RemovePagesFor(connectName, name) })
 				Publish(ConnectorsChannel, GetConnectorsEventType, Payload{nil, true})
 				cancel()
 				return
@@ -1344,34 +1352,11 @@ func (app *App) DeleteConnectorResultHandler(name string) {
 	}()
 }
 
-// DeleteConnectorOffsets shows a confirmation modal for resetting a connector's offsets.
+// DeleteConnectorOffsets asks in the status line before resetting a connector's offsets.
 func (app *App) DeleteConnectorOffsets(connectorName string) {
-	messageText := tview.NewTextView().
-		SetText(fmt.Sprintf("Offsets for connector [red::b]%s[-::-] will be deleted. Confirm?", connectorName)).
-		SetTextAlign(tview.AlignCenter).
-		SetDynamicColors(true)
-
-	messageText.SetBorder(true).
-		SetTitle(" Confirm Deletion ").
-		SetBorderPadding(0, 0, 1, 1)
-
-	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if IsCtrlEnter(event) {
-			app.DeleteConnectorOffsetsResultHandler(connectorName)
-			app.HideModalPage(DeleteConnectorOffsets)
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.HideModalPage(DeleteConnectorOffsets)
-		}
-
-		return event
-	})
-
-	modal := util.NewConfirmationModal(messageText)
-	app.Layout.PagesRegistry.UI.Pages.AddPage(DeleteConnectorOffsets, modal, true, true)
-	app.Layout.Menu.SetMenu(DeleteConnectorOffsetsPageMenu)
-	app.Layout.PagesRegistry.UI.Pages.ShowPage(DeleteConnectorOffsets)
+	app.Modify(fmt.Sprintf("delete offsets of connector '%s'?", connectorName),
+		func() { app.DeleteConnectorOffsetsResultHandler(connectorName) },
+	)
 }
 
 // DeleteConnectorOffsetsResultHandler performs the connector offsets reset.
@@ -1506,7 +1491,7 @@ func (app *App) CopyConnectorOffsetsResultHandler(targetName string, offsets []c
 			app.setConnectorOffsets(c, targetName, offsets)
 		case err := <-errorCh:
 			log.Error().Err(err).Msg("failed to list connectors")
-			SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to list connectors: %s", err.Error()))
+			SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
 		case <-ctx.Done():
 			log.Error().Msg("timeout while listing connectors")
 			SendStatusWithDefaultTTL("[red]timeout while listing connectors")

@@ -184,10 +184,18 @@ func (client *Client) Schema(
 	}()
 }
 
-// SchemaByID retrieves a schema by its global ID.
+// SchemaByIDResult is a schema looked up by its global id, together with the subjects and
+// versions that id is registered under. An id says nothing on its own; where it is used is
+// what the reader is usually after.
+type SchemaByIDResult struct {
+	Info   schemaregistry.SchemaInfo
+	UsedBy []schemaregistry.SubjectAndVersion
+}
+
+// SchemaByID retrieves a schema by its global ID, along with where it is used.
 func (client *Client) SchemaByID(
 	id int,
-	resultChan chan<- schemaregistry.SchemaInfo,
+	resultChan chan<- SchemaByIDResult,
 	errorChan chan<- error,
 ) {
 	go func() {
@@ -196,6 +204,15 @@ func (client *Client) SchemaByID(
 			errorChan <- err
 			return
 		}
-		resultChan <- info
+
+		// Not every registry answers this one — a restricted principal, or an older version.
+		// The schema itself is still worth showing, so a failure here is logged, not returned.
+		usedBy, err := client.GetSubjectsAndVersionsByID(id)
+		if err != nil {
+			log.Warn().Err(err).Int("id", id).Msg("cannot resolve which subjects use the schema")
+			usedBy = nil
+		}
+
+		resultChan <- SchemaByIDResult{Info: info, UsedBy: usedBy}
 	}()
 }

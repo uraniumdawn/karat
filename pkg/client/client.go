@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 
@@ -25,13 +24,6 @@ import (
 type ClusterResult struct {
 	Name string
 	kafka.DescribeClusterResult
-}
-
-// TopicStrategy holds the reset strategy for a single topic in batch mode.
-type TopicStrategy struct {
-	Strategy    string
-	TimestampMs int64
-	OffsetValue int64
 }
 
 // ResourceResult contains configuration resource results.
@@ -722,9 +714,12 @@ func (client *Client) DeleteConsumerGroup(
 }
 
 // UpdateTopicConfig incrementally applies the given config overrides to the named topic.
+// Keys listed in remove are reset to the cluster default. Both happen in a single
+// IncrementalAlterConfigs call, so the topic never sits in a half-applied state.
 func (client *Client) UpdateTopicConfig(
 	name string,
 	config map[string]string,
+	remove []string,
 	resultChan chan<- bool,
 	errorChan chan<- error,
 ) {
@@ -742,8 +737,15 @@ func (client *Client) UpdateTopicConfig(
 		var configEntries []kafka.ConfigEntry
 		for key, value := range config {
 			configEntries = append(configEntries, kafka.ConfigEntry{
-				Name:  key,
-				Value: value,
+				Name:                 key,
+				Value:                value,
+				IncrementalOperation: kafka.AlterConfigOpTypeSet,
+			})
+		}
+		for _, key := range remove {
+			configEntries = append(configEntries, kafka.ConfigEntry{
+				Name:                 key,
+				IncrementalOperation: kafka.AlterConfigOpTypeDelete,
 			})
 		}
 
@@ -896,6 +898,37 @@ func (r *DescribeConsumerGroupResult) SetEndOffsets(o map[TopicPartition]kafka.O
 	r.logEndOffsets = o
 }
 
+// CommittedOffset is one partition's committed position, as of the describe call that
+// produced it.
+type CommittedOffset struct {
+	TopicPartition TopicPartition
+	Committed      int64
+}
+
+// GetCommittedOffsets returns the group's committed offsets, one entry per partition,
+// ordered by topic then partition. Partitions the group has not committed on are absent.
+func (r *DescribeConsumerGroupResult) GetCommittedOffsets() []CommittedOffset {
+	r.mx.RLock()
+	defer r.mx.RUnlock()
+
+	offsets := make([]CommittedOffset, 0, len(r.currentOffsets))
+	for tp, committed := range r.currentOffsets {
+		offsets = append(offsets, CommittedOffset{
+			TopicPartition: tp,
+			Committed:      int64(committed),
+		})
+	}
+
+	sort.Slice(offsets, func(i, j int) bool {
+		if offsets[i].TopicPartition.Topic != offsets[j].TopicPartition.Topic {
+			return offsets[i].TopicPartition.Topic < offsets[j].TopicPartition.Topic
+		}
+		return offsets[i].TopicPartition.Partition < offsets[j].TopicPartition.Partition
+	})
+
+	return offsets
+}
+
 // GetTotalLag returns the sum of lag across all partitions.
 // Returns the total number of messages the consumer group is behind.
 func (r *DescribeConsumerGroupResult) GetTotalLag() int64 {
@@ -1003,54 +1036,174 @@ func (r *TopicResult) GetMessagesLastHour() int64 {
 	return total
 }
 
-// GetEstimatedSizeBytes returns an estimated topic size in bytes.
-// Returns (size_in_bytes, is_estimate).
-// If is_estimate is false, only message count is reliable (size estimation failed).
-// The estimation is based on segment.bytes configuration and assumes:
-// - Average segment utilization of 70%
-// - Approximately 10,000 messages per segment
-// This provides a rough approximation; actual size may vary due to:
-// - Message size variance
-// - Compression settings
-// - Replication factor (not included in this calculation)
-func (r *TopicResult) GetEstimatedSizeBytes() (int64, bool) {
-	totalMessages := r.GetTotalMessages()
-	if totalMessages == 0 {
-		return 0, false
-	}
-
-	// Try to get segment.bytes from config for estimation
-	var segmentBytes int64 = 1073741824 // default 1GB
-
-	for _, configResult := range r.Config {
-		if entry, ok := configResult.Config["segment.bytes"]; ok {
-			if parsed, err := strconv.ParseInt(entry.Value, 10, 64); err == nil {
-				segmentBytes = parsed
-				break
-			}
+// TopicPartitionCounts returns the partition count of every topic on the cluster. It is
+// what lets an offsets document name a topic the group has never consumed: the partitions
+// to seed cannot come from the group's committed offsets, only from cluster metadata.
+func (client *Client) TopicPartitionCounts(
+	resultChan chan<- map[string]int,
+	errorChan chan<- error,
+) {
+	go func() {
+		metadata, err := client.GetMetadata(nil, true, int(client.Timeout.Milliseconds()))
+		if err != nil {
+			errorChan <- err
+			return
 		}
-	}
 
-	// Estimate: assume average segment is 70% full and contains ~10k messages
-	// This is a rough heuristic: segment_bytes * 0.7 / 10000 = avg_msg_size
-	estimatedAvgMsgSize := float64(segmentBytes) * 0.7 / 10000.0
+		counts := make(map[string]int, len(metadata.Topics))
+		for name, topic := range metadata.Topics {
+			counts[name] = len(topic.Partitions)
+		}
 
-	// Ensure minimum 100 bytes per message (reasonable lower bound)
-	if estimatedAvgMsgSize < 100 {
-		estimatedAvgMsgSize = 1000 // default to 1KB per message
-	}
-
-	estimatedSize := int64(float64(totalMessages) * estimatedAvgMsgSize)
-
-	// Return estimate with flag indicating it's an approximation
-	return estimatedSize, true
+		resultChan <- counts
+	}()
 }
 
-// BatchResetConsumerGroupOffsets resets committed offsets for multiple topics with different strategies.
-// Groups topics by strategy, resolves offsets per group, then makes a single AlterConsumerGroupOffsets call.
-func (client *Client) BatchResetConsumerGroupOffsets(
+// OffsetTargetKind identifies how a requested offset is expressed: as an absolute value,
+// as one of the partition's watermarks, or as a point in time to look up.
+type OffsetTargetKind int
+
+const (
+	// OffsetTargetAbsolute is a literal offset, used as given.
+	OffsetTargetAbsolute OffsetTargetKind = iota
+	// OffsetTargetEarliest resolves to the partition's low watermark.
+	OffsetTargetEarliest
+	// OffsetTargetLatest resolves to the partition's high watermark.
+	OffsetTargetLatest
+	// OffsetTargetTimestamp resolves to the first offset at or after TimestampMs.
+	OffsetTargetTimestamp
+)
+
+// OffsetTarget is one partition's requested new committed offset.
+type OffsetTarget struct {
+	Kind        OffsetTargetKind
+	Offset      int64
+	TimestampMs int64
+}
+
+// ResolvedOffset is a requested offset after resolution against the cluster, carrying the
+// watermarks it was resolved against so the caller can show and range-check it.
+type ResolvedOffset struct {
+	Target   int64
+	Earliest int64
+	Latest   int64
+}
+
+// InRange reports whether the target is a position the group can actually commit. An
+// out-of-range commit is accepted by the broker and then silently overridden by the
+// consumer's auto.offset.reset, so it is worth rejecting before it is sent.
+func (o ResolvedOffset) InRange() bool {
+	return o.Target >= o.Earliest && o.Target <= o.Latest
+}
+
+// toKafka converts to the confluent representation, which holds the topic by pointer.
+func (tp TopicPartition) toKafka() kafka.TopicPartition {
+	topic := tp.Topic
+	return kafka.TopicPartition{Topic: &topic, Partition: tp.Partition}
+}
+
+// listOffsets resolves one offset spec per partition into absolute offsets.
+func (client *Client) listOffsets(
+	ctx context.Context,
+	request map[kafka.TopicPartition]kafka.OffsetSpec,
+) (map[TopicPartition]int64, error) {
+	if len(request) == 0 {
+		return map[TopicPartition]int64{}, nil
+	}
+
+	result, err := client.ListOffsets(ctx, request,
+		kafka.SetAdminIsolationLevel(kafka.IsolationLevelReadCommitted))
+	if err != nil {
+		return nil, err
+	}
+
+	offsets := make(map[TopicPartition]int64, len(result.ResultInfos))
+	for tp, info := range result.ResultInfos {
+		if info.Error.Code() != kafka.ErrNoError {
+			return nil, fmt.Errorf(
+				"failed to resolve offset for %s[%d]: %s",
+				*tp.Topic, tp.Partition, info.Error.String(),
+			)
+		}
+		offsets[TopicPartition{Topic: *tp.Topic, Partition: tp.Partition}] = int64(info.Offset)
+	}
+
+	return offsets, nil
+}
+
+// ResolveOffsetTargets turns requested offsets into concrete ones, resolving watermarks
+// and timestamps against the cluster. Every partition's watermarks are fetched, including
+// for absolute targets, so the caller can range-check what the user typed.
+func (client *Client) ResolveOffsetTargets(
+	targets map[TopicPartition]OffsetTarget,
+	resultChan chan<- map[TopicPartition]ResolvedOffset,
+	errorChan chan<- error,
+) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), client.Timeout)
+		defer cancel()
+
+		earliestRq := make(map[kafka.TopicPartition]kafka.OffsetSpec, len(targets))
+		latestRq := make(map[kafka.TopicPartition]kafka.OffsetSpec, len(targets))
+		timestampRq := make(map[kafka.TopicPartition]kafka.OffsetSpec)
+		for tp, target := range targets {
+			ktp := tp.toKafka()
+			earliestRq[ktp] = kafka.EarliestOffsetSpec
+			latestRq[ktp] = kafka.LatestOffsetSpec
+			if target.Kind == OffsetTargetTimestamp {
+				timestampRq[ktp] = kafka.NewOffsetSpecForTimestamp(target.TimestampMs)
+			}
+		}
+
+		earliest, err := client.listOffsets(ctx, earliestRq)
+		if err != nil {
+			errorChan <- err
+			return
+		}
+		latest, err := client.listOffsets(ctx, latestRq)
+		if err != nil {
+			errorChan <- err
+			return
+		}
+		byTimestamp, err := client.listOffsets(ctx, timestampRq)
+		if err != nil {
+			errorChan <- err
+			return
+		}
+
+		resolved := make(map[TopicPartition]ResolvedOffset, len(targets))
+		for tp, target := range targets {
+			offset := ResolvedOffset{Earliest: earliest[tp], Latest: latest[tp]}
+
+			switch target.Kind {
+			case OffsetTargetAbsolute:
+				offset.Target = target.Offset
+			case OffsetTargetEarliest:
+				offset.Target = offset.Earliest
+			case OffsetTargetLatest:
+				offset.Target = offset.Latest
+			case OffsetTargetTimestamp:
+				// A timestamp past the last record resolves to -1; the end of the log is
+				// the only position that satisfies it.
+				if ts, ok := byTimestamp[tp]; ok && ts >= 0 {
+					offset.Target = ts
+				} else {
+					offset.Target = offset.Latest
+				}
+			}
+
+			resolved[tp] = offset
+		}
+
+		resultChan <- resolved
+	}()
+}
+
+// SetConsumerGroupOffsets commits the given absolute offsets for the group in a single
+// AlterConsumerGroupOffsets call. The group must have no active members.
+func (client *Client) SetConsumerGroupOffsets(
 	group string,
-	topicStrategies map[string]TopicStrategy,
+	offsets map[TopicPartition]int64,
 	resultChan chan<- bool,
 	errorChan chan<- error,
 ) {
@@ -1058,88 +1211,21 @@ func (client *Client) BatchResetConsumerGroupOffsets(
 		ctx, cancel := context.WithTimeout(context.Background(), client.Timeout)
 		defer cancel()
 
-		listResult, err := client.ListConsumerGroupOffsets(
-			ctx,
-			[]kafka.ConsumerGroupTopicPartitions{{Group: group}},
-		)
-		if err != nil {
-			errorChan <- fmt.Errorf("failed to list consumer group offsets: %w", err)
-			return
+		partitions := make([]kafka.TopicPartition, 0, len(offsets))
+		for tp, offset := range offsets {
+			ktp := tp.toKafka()
+			ktp.Offset = kafka.Offset(offset)
+			partitions = append(partitions, ktp)
 		}
 
-		strategyGroups := make(map[string][]kafka.TopicPartition)
-		for topic, ts := range topicStrategies {
-			if ts.Strategy == "none" {
-				continue
-			}
-			for _, tps := range listResult.ConsumerGroupsTopicPartitions {
-				for _, tp := range tps.Partitions {
-					if tp.Topic != nil && *tp.Topic == topic {
-						strategyGroups[ts.Strategy] = append(strategyGroups[ts.Strategy], tp)
-					}
-				}
-			}
-		}
-
-		if len(strategyGroups) == 0 {
-			errorChan <- fmt.Errorf("no topics with non-none strategy found")
-			return
-		}
-
-		allOffsets := make([]kafka.TopicPartition, 0)
-
-		for strategy, partitions := range strategyGroups {
-			var spec kafka.OffsetSpec
-			switch strategy {
-			case "to-earliest":
-				spec = kafka.EarliestOffsetSpec
-			case "to-latest":
-				spec = kafka.LatestOffsetSpec
-			case "to-timestamp":
-				ts := topicStrategies[*partitions[0].Topic]
-				spec = kafka.NewOffsetSpecForTimestamp(ts.TimestampMs)
-			case "to-offset":
-				ts := topicStrategies[*partitions[0].Topic]
-				for _, tp := range partitions {
-					tpCopy := tp
-					tpCopy.Offset = kafka.Offset(ts.OffsetValue)
-					allOffsets = append(allOffsets, tpCopy)
-				}
-				continue
-			default:
-				errorChan <- fmt.Errorf("unknown reset strategy: %s", strategy)
-				return
-			}
-
-			offsetsRequest := make(map[kafka.TopicPartition]kafka.OffsetSpec)
-			for _, tp := range partitions {
-				offsetsRequest[tp] = spec
-			}
-
-			targetOffsets, err := client.ListOffsets(ctx, offsetsRequest,
-				kafka.SetAdminIsolationLevel(kafka.IsolationLevelReadCommitted))
-			if err != nil {
-				errorChan <- fmt.Errorf("failed to resolve target offsets for strategy %s: %w", strategy, err)
-				return
-			}
-
-			for tp, info := range targetOffsets.ResultInfos {
-				tpCopy := tp
-				tpCopy.Offset = info.Offset
-				allOffsets = append(allOffsets, tpCopy)
-			}
-		}
-
-		if len(allOffsets) == 0 {
-			errorChan <- fmt.Errorf("no offsets resolved")
+		if len(partitions) == 0 {
+			errorChan <- fmt.Errorf("no offsets to set")
 			return
 		}
 
 		alterResult, err := client.AlterConsumerGroupOffsets(
 			ctx,
-			[]kafka.ConsumerGroupTopicPartitions{
-				{Group: group, Partitions: allOffsets},
-			},
+			[]kafka.ConsumerGroupTopicPartitions{{Group: group, Partitions: partitions}},
 			kafka.SetAdminRequestTimeout(client.Timeout),
 		)
 		if err != nil {
@@ -1151,7 +1237,7 @@ func (client *Client) BatchResetConsumerGroupOffsets(
 			for _, tp := range result.Partitions {
 				if tp.Error != nil {
 					errorChan <- fmt.Errorf(
-						"failed to reset offset for %s[%d]: %s",
+						"failed to set offset for %s[%d]: %s",
 						*tp.Topic, tp.Partition, tp.Error,
 					)
 					return

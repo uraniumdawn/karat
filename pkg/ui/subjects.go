@@ -130,8 +130,10 @@ func (app *App) Subjects() {
 						}
 
 						if event.Key() == tcell.KeyEnter {
-							row, _ := table.GetSelection()
-							subject := table.GetCell(row, 0).Text
+							subject, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
 							Publish(
 								SubjectsChannel,
 								GetVersionsEventType,
@@ -140,8 +142,10 @@ func (app *App) Subjects() {
 						}
 
 						if IsKey(event, '.') {
-							row, _ := table.GetSelection()
-							subject := table.GetCell(row, 0).Text
+							subject, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
 							app.ShowExtraActions(SubjectsExtraActions, subject)
 						}
 
@@ -150,10 +154,19 @@ func (app *App) Subjects() {
 
 					app.AddToPagesRegistry(pageKey, table, SubjectsPageMenu, true)
 
+					// A refresh builds a new table: without this the cursor lands on the
+					// first row, and the next key acts on a subject the user did not pick.
+					app.RestoreSelection(pageKey, table, afterHeaderRow)
+					app.TrackSelection(pageKey, table, afterHeaderRow)
+
 					app.AssignSearch(func(text string) {
-						filterSubjectsTable(table, subjects, text)
+						filterSubjectsTable(table, subjects, text, app.labelColor())
 						util.SetSearchableTableTitle(table, title, text)
 						table.ScrollToBeginning()
+						// The rows the cursor pointed at are gone; without this the selection
+						// is left past the end of the filtered table and every row action
+						// reads an empty cell.
+						app.RestoreSelection(pageKey, table, afterHeaderRow)
 					})
 
 					ClearStatus()
@@ -166,8 +179,8 @@ func (app *App) Subjects() {
 				cancel()
 				return
 			case <-ctx.Done():
-				log.Error().Msg("timeout while to list subjects")
-				SendStatusWithDefaultTTL("[red]timeout while to list subjects")
+				log.Error().Msg("timeout while listing subjects")
+				SendStatusWithDefaultTTL("[red]timeout while listing subjects")
 				return
 			}
 		}
@@ -199,6 +212,8 @@ func (app *App) Versions(subject string) {
 					table.SetTitle(title)
 
 					app.AddToPagesRegistry(pageKey, table, VersionsPageMenu, false)
+					app.RestoreSelection(pageKey, table, afterHeaderRow)
+					app.TrackSelection(pageKey, table, afterHeaderRow)
 					table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 						if event.Key() == tcell.KeyCtrlU {
 							Publish(
@@ -209,16 +224,20 @@ func (app *App) Versions(subject string) {
 						}
 
 						if IsKey(event, 'd') {
-							row, _ := table.GetSelection()
-							version := table.GetCell(row, 0).Text
+							version, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
 
 							Publish(SubjectsChannel, GetSchemaEventType,
 								Payload{SubjectVersionPair{subject, version}, false})
 						}
 
 						if IsKey(event, '.') {
-							row, _ := table.GetSelection()
-							version := table.GetCell(row, 0).Text
+							version, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
 							app.ShowExtraActions(
 								VersionsExtraActions,
 								subject+"\x00"+version,
@@ -240,8 +259,8 @@ func (app *App) Versions(subject string) {
 				cancel()
 				return
 			case <-ctx.Done():
-				log.Error().Msg("timeout while to list subject's versions")
-				SendStatusWithDefaultTTL("[red]timeout while to list subject's versions")
+				log.Error().Msg("timeout while listing subject's versions")
+				SendStatusWithDefaultTTL("[red]timeout while listing subject's versions")
 				return
 			}
 		}
@@ -355,13 +374,20 @@ func (app *App) Schema(subject string, version int) {
 				cancel()
 				return
 			case <-ctx.Done():
-				log.Error().Msg("timeout while to list subject's versions")
-				SendStatusWithDefaultTTL("[red]tmeout while to list subject's versions")
+				log.Error().Msg("timeout while listing subject's versions")
+				SendStatusWithDefaultTTL("[red]timeout while listing subject's versions")
 				return
 			}
 		}
 	}()
 }
+
+// Column headers of the subject and version lists. Both hold a single column, and both label
+// it, as every other list page does.
+const (
+	subjectsTableHeader = "Subject"
+	versionsTableHeader = "Version"
+)
 
 // NewSubjectsTable creates a table displaying schema subjects.
 func (app *App) NewSubjectsTable(subjects []string) *tview.Table {
@@ -379,9 +405,12 @@ func (app *App) NewSubjectsTable(subjects []string) *tview.Table {
 		)
 	}
 
+	table.SetFixed(1, 0)
+	util.SetTableHeaders(table, app.labelColor(), subjectsTableHeader)
+
 	sort.Strings(subjects)
 	for i, subject := range subjects {
-		table.SetCell(i, 0, tview.NewTableCell(subject))
+		table.SetCell(i+1, 0, tview.NewTableCell(subject))
 	}
 
 	return table
@@ -404,11 +433,13 @@ func (app *App) NewVersionsTable(versions []int) *tview.Table {
 		)
 	}
 
-	row := 0
-	for _, version := range versions {
-		table.SetCell(row, 0, tview.NewTableCell(strconv.Itoa(version)))
-		row++
+	table.SetFixed(1, 0)
+	util.SetTableHeaders(table, app.labelColor(), versionsTableHeader)
+
+	for i, version := range versions {
+		table.SetCell(i+1, 0, tview.NewTableCell(strconv.Itoa(version)))
 	}
+
 	return table
 }
 
@@ -681,36 +712,11 @@ func (app *App) CloneSubjectResultHandler(
 	}()
 }
 
-// DeleteSubjectConfirm shows a confirmation modal before deleting a subject.
+// DeleteSubjectConfirm asks in the status line before deleting a subject.
 func (app *App) DeleteSubjectConfirm(subject string) {
-	messageText := tview.NewTextView().
-		SetText(fmt.Sprintf(
-			"Subject [red::b]%s[-::-] will be deleted. Confirm?",
-			subject,
-		)).
-		SetTextAlign(tview.AlignCenter).
-		SetDynamicColors(true)
-
-	messageText.SetBorder(true).
-		SetTitle(" Confirm Deletion ").
-		SetBorderPadding(0, 0, 1, 1)
-
-	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if IsCtrlEnter(event) {
-			app.DeleteSubjectResultHandler(subject)
-			app.HideModalPage(DeleteSubject)
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.HideModalPage(DeleteSubject)
-		}
-
-		return event
-	})
-
-	modal := util.NewConfirmationModal(messageText)
-	app.Layout.PagesRegistry.UI.Pages.AddPage(DeleteSubject, modal, true, true)
-	app.Layout.PagesRegistry.UI.Pages.ShowPage(DeleteSubject)
+	app.Modify(fmt.Sprintf("delete subject '%s'?", subject),
+		func() { app.DeleteSubjectResultHandler(subject) },
+	)
 }
 
 // DeleteSubjectResultHandler soft-deletes all versions of a subject.
@@ -751,42 +757,11 @@ func (app *App) DeleteSubjectResultHandler(subject string) {
 	}()
 }
 
-// DeleteSubjectVersionConfirm shows a confirmation modal before deleting a subject version.
+// DeleteSubjectVersionConfirm asks in the status line before deleting a subject version.
 func (app *App) DeleteSubjectVersionConfirm(subject string, version int) {
-	messageText := tview.NewTextView().
-		SetText(fmt.Sprintf(
-			"Version [red::b]%d[-::-] of subject [red::b]%s[-::-] will be deleted. Confirm?",
-			version,
-			subject,
-		)).
-		SetTextAlign(tview.AlignCenter).
-		SetDynamicColors(true)
-
-	messageText.SetBorder(true).
-		SetTitle(" Confirm Deletion ").
-		SetBorderPadding(0, 0, 1, 1)
-
-	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if IsCtrlEnter(event) {
-			app.DeleteSubjectVersionResultHandler(subject, version)
-			app.HideModalPage(DeleteSubjectVersion)
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.HideModalPage(DeleteSubjectVersion)
-		}
-
-		return event
-	})
-
-	modal := util.NewConfirmationModal(messageText)
-	app.Layout.PagesRegistry.UI.Pages.AddPage(
-		DeleteSubjectVersion,
-		modal,
-		true,
-		true,
+	app.Modify(fmt.Sprintf("delete version %d of subject '%s'?", version, subject),
+		func() { app.DeleteSubjectVersionResultHandler(subject, version) },
 	)
-	app.Layout.PagesRegistry.UI.Pages.ShowPage(DeleteSubjectVersion)
 }
 
 // DeleteSubjectVersionResultHandler soft-deletes a specific version of a subject.
@@ -880,9 +855,25 @@ func (app *App) FindSchemaByIDModal() {
 	app.Layout.PagesRegistry.UI.Pages.AddPage(FindSchemaByID, modal, true, false)
 }
 
+// formatSchemaUsage renders the subjects and versions a schema id is registered under, for the
+// page title: an id on its own says nothing about where the schema is in use. Empty when the
+// registry did not answer, which leaves the title as it was.
+func formatSchemaUsage(usedBy []sr.SubjectAndVersion) string {
+	if len(usedBy) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(usedBy))
+	for _, u := range usedBy {
+		parts = append(parts, fmt.Sprintf("%s v%d", u.Subject, u.Version))
+	}
+
+	return " [" + strings.Join(parts, ", ") + "]"
+}
+
 // SchemaByID fetches and displays a schema by its global ID.
 func (app *App) SchemaByID(id int) {
-	resultCh := make(chan sr.SchemaInfo)
+	resultCh := make(chan schemaregistry.SchemaByIDResult)
 	errorCh := make(chan error)
 
 	c := app.GetCurrentSchemaRegistryClient()
@@ -894,9 +885,11 @@ func (app *App) SchemaByID(id int) {
 		for {
 			select {
 			case result := <-resultCh:
+				usedBy := formatSchemaUsage(result.UsedBy)
+
 				var formattedSchema string
 				var pretty bytes.Buffer
-				indentErr := json.Indent(&pretty, []byte(result.Schema), "", "  ")
+				indentErr := json.Indent(&pretty, []byte(result.Info.Schema), "", "  ")
 				if indentErr != nil {
 					log.Error().Err(indentErr).Msg("failed to format schema")
 					SendStatusWithDefaultTTL(
@@ -907,7 +900,7 @@ func (app *App) SchemaByID(id int) {
 				}
 				formattedSchema = pretty.String()
 
-				karatFormatted, karatErr := util.FormatAvroSchemaKarat(result.Schema)
+				karatFormatted, karatErr := util.FormatAvroSchemaKarat(result.Info.Schema)
 				if karatErr != nil {
 					log.Error().Err(karatErr).Msg("failed to format schema in Karat format")
 				}
@@ -921,7 +914,7 @@ func (app *App) SchemaByID(id int) {
 					)
 					baseTitle := strings.TrimRight(
 						util.BuildTitle("Schema ID", idStr), " ",
-					)
+					) + usedBy
 					desc := app.NewDescription(baseTitle)
 
 					app.AddToPagesRegistry(
@@ -990,25 +983,21 @@ func (app *App) SchemaByID(id int) {
 	}()
 }
 
-func filterSubjectsTable(table *tview.Table, subjects []string, filter string) {
+func filterSubjectsTable(table *tview.Table, subjects []string, filter string, labelColor tcell.Color) {
+	// Clear takes the header with it, so it is written again before the rows.
 	table.Clear()
+	util.SetTableHeaders(table, labelColor, subjectsTableHeader)
 
 	if filter == "" {
 		// Show all subjects sorted alphabetically when filter is empty
 		sort.Strings(subjects)
-		row := 0
-		for _, subject := range subjects {
-			table.SetCell(row, 0, tview.NewTableCell(subject))
-			row++
+		for i, subject := range subjects {
+			table.SetCell(i+1, 0, tview.NewTableCell(subject))
 		}
 		return
 	}
 
-	matches := fuzzy.Find(filter, subjects)
-
-	row := 0
-	for _, match := range matches {
-		table.SetCell(row, 0, tview.NewTableCell(match.Str))
-		row++
+	for i, match := range fuzzy.Find(filter, subjects) {
+		table.SetCell(i+1, 0, tview.NewTableCell(match.Str))
 	}
 }

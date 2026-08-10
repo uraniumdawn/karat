@@ -119,6 +119,20 @@ func SetTableHeaders(table *tview.Table, labelColor tcell.Color, headers ...stri
 	}
 }
 
+// SetColumnMarker puts marker in column col of activeRow and clears that column in every
+// other data row, leaving the header row (row 0) untouched. Used for single-choice marker
+// columns, where at most one row can carry the marker. Cells in col are replaced, so any
+// per-cell styling there is lost.
+func SetColumnMarker(table *tview.Table, col, activeRow int, marker string) {
+	for row := 1; row < table.GetRowCount(); row++ {
+		text := ""
+		if row == activeRow {
+			text = marker
+		}
+		table.SetCell(row, col, tview.NewTableCell(text))
+	}
+}
+
 // TableToCSV writes the contents of table to fileName in CSV format.
 func TableToCSV(fileName string, table *tview.Table) {
 	file, _ := os.Create(fileName)
@@ -155,17 +169,8 @@ func NewModal(p tview.Primitive) tview.Primitive {
 		AddItem(nil, 2, 0, false)
 }
 
-// ConfirmationModalHeight is the height of a confirmation dialog: a single content row
-// between the two border lines.
-const ConfirmationModalHeight = 3
-
-// NewConfirmationModal centers p in a flex layout sized for a small confirmation dialog.
-func NewConfirmationModal(p tview.Primitive) tview.Primitive {
-	return NewWideModal(p, ConfirmationModalHeight)
-}
-
 // NewWideModal puts p near the top of the content area with a fixed height, spanning the
-// width of a confirmation dialog.
+// width of a wide dialog.
 func NewWideModal(p tview.Primitive, height int) tview.Primitive {
 	return tview.NewFlex().
 		AddItem(nil, 1, 0, false).

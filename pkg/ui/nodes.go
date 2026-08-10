@@ -87,18 +87,21 @@ func (app *App) Nodes() {
 			select {
 			case description := <-resultCh:
 				nodes := description.Nodes
+				controller := description.Controller
 				app.QueueUpdateDraw(func() {
 					pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Nodes)
-					table := app.NewNodesTable(nodes)
+					table := app.NewNodesTable(nodes, controller)
 					table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 						if event.Key() == tcell.KeyCtrlU {
 							Publish(NodesChannel, GetNodesEventType, Payload{nil, true})
 						}
 
 						if IsKey(event, 'd') {
-							row, _ := table.GetSelection()
-							nodeID := table.GetCell(row, 0).Text
-							url := table.GetCell(row, 1).Text
+							nodeID, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
+							url, _ := selectedRow(table, 1, afterHeaderRow)
 							Publish(NodesChannel, GetNodeEventType,
 								Payload{Data: NodeIDURLPair{nodeID, url}, Force: false})
 						}
@@ -107,6 +110,8 @@ func (app *App) Nodes() {
 					})
 
 					app.AddToPagesRegistry(pageKey, table, NodesPageMenu, false)
+					app.RestoreSelection(pageKey, table, afterHeaderRow)
+					app.TrackSelection(pageKey, table, afterHeaderRow)
 					ClearStatus()
 				})
 				cancel()
@@ -179,11 +184,16 @@ func (app *App) Node(id, url string) {
 
 // addNodesTableHeader adds a fixed header row (row 0) with label-coloured cells.
 func addNodesTableHeader(table *tview.Table, labelColor tcell.Color) {
-	util.SetTableHeaders(table, labelColor, "ID", "Host")
+	util.SetTableHeaders(table, labelColor, "ID", "Host", "Role")
 }
 
+// controllerRole is what the Role column says about the broker running the controller. Which
+// broker that is decides where an admin request has to land, so the list names it rather than
+// leaving it to the cluster description page.
+const controllerRole = "controller"
+
 // NewNodesTable creates a table displaying Kafka nodes.
-func (app *App) NewNodesTable(nodes []kafka.Node) *tview.Table {
+func (app *App) NewNodesTable(nodes []kafka.Node, controller *kafka.Node) *tview.Table {
 	table := tview.NewTable()
 	table.SetSelectable(true, false).
 		SetBorder(true).
@@ -202,8 +212,13 @@ func (app *App) NewNodesTable(nodes []kafka.Node) *tview.Table {
 
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	for i, node := range nodes {
+		role := ""
+		if controller != nil && controller.ID == node.ID {
+			role = controllerRole
+		}
 		table.SetCell(i+1, 0, tview.NewTableCell(strconv.Itoa(node.ID)))
 		table.SetCell(i+1, 1, tview.NewTableCell(node.Host))
+		table.SetCell(i+1, 2, tview.NewTableCell(role))
 	}
 	table.SetTitle(
 		util.BuildTitle(Nodes,

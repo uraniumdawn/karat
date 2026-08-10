@@ -56,8 +56,7 @@ var extraActionsRegistry = map[string][]ExtraAction{
 		{
 			Name: "Clone consumer group",
 			Run: func(app *App, ctx string) {
-				if app.IsCurrentClusterReadOnly() {
-					SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+				if !app.Allowed() {
 					return
 				}
 				app.CopyConsumerGroupModal(ctx)
@@ -102,8 +101,7 @@ var extraActionsRegistry = map[string][]ExtraAction{
 		{
 			Name: "Clone topic",
 			Run: func(app *App, ctx string) {
-				if app.IsCurrentClusterReadOnly() {
-					SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+				if !app.Allowed() {
 					return
 				}
 				app.CloneTopic(ctx)
@@ -112,8 +110,7 @@ var extraActionsRegistry = map[string][]ExtraAction{
 		{
 			Name: "Recreate topic",
 			Run: func(app *App, ctx string) {
-				if app.IsCurrentClusterReadOnly() {
-					SendStatusWithDefaultTTL("[red]cluster is in read-only mode")
+				if !app.Allowed() {
 					return
 				}
 				app.RecreateTopic(ctx)
@@ -131,8 +128,7 @@ var extraActionsRegistry = map[string][]ExtraAction{
 		{
 			Name: "Clone subject",
 			Run: func(app *App, ctx string) {
-				if app.IsCurrentSchemaRegistryReadOnly() {
-					SendStatusWithDefaultTTL("[red]schema registry is in read-only mode")
+				if !app.Allowed() {
 					return
 				}
 				app.CloneSubject(ctx)
@@ -141,12 +137,7 @@ var extraActionsRegistry = map[string][]ExtraAction{
 		{
 			Name: "Delete subject",
 			Run: func(app *App, ctx string) {
-				if app.IsCurrentSchemaRegistryReadOnly() {
-					SendStatusWithDefaultTTL("[red]schema registry is in read-only mode")
-					return
-				}
 				app.DeleteSubjectConfirm(ctx)
-				app.ShowModalPage(DeleteSubject)
 			},
 		},
 	},
@@ -154,15 +145,10 @@ var extraActionsRegistry = map[string][]ExtraAction{
 		{
 			Name: "Delete version",
 			Run: func(app *App, ctx string) {
-				if app.IsCurrentSchemaRegistryReadOnly() {
-					SendStatusWithDefaultTTL("[red]schema registry is in read-only mode")
-					return
-				}
 				parts := strings.SplitN(ctx, "\x00", 2)
 				subject := parts[0]
 				version, _ := strconv.Atoi(parts[1])
 				app.DeleteSubjectVersionConfirm(subject, version)
-				app.ShowModalPage(DeleteSubjectVersion)
 			},
 		},
 	},

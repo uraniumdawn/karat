@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
@@ -80,15 +81,13 @@ func (app *App) RunTopicsEventHandler(ctx context.Context, in chan Event) {
 
 				case CreateTopicEventType:
 					app.QueueUpdateDraw(func() {
-						app.CreateTopic()
-						app.ShowModalPage(CreateTopic)
+						app.CreateTopicDocument()
 					})
 
 				case DeleteTopicEventType:
 					topicName := event.Payload.Data.(string)
 					app.QueueUpdateDraw(func() {
 						app.DeleteTopic(topicName)
-						app.ShowModalPage(DeleteTopic)
 					})
 
 				case EditTopicEventType:
@@ -160,6 +159,11 @@ func (app *App) Topics(force bool) {
 						"["+strconv.Itoa(len(topics.Result))+"]")
 					app.AddToPagesRegistry(pageKey, table, TopicsPageMenu, true)
 
+					// A refresh builds a new table: without this the cursor lands on the
+					// first row, and the next key acts on a topic the user did not pick.
+					app.RestoreSelection(pageKey, table, afterHeaderRow)
+					app.TrackSelection(pageKey, table, afterHeaderRow)
+
 					sortCol := 0
 					sortDesc := false
 					hideInternal := app.HideInternalTopics
@@ -179,8 +183,10 @@ func (app *App) Topics(force bool) {
 							Publish(TopicsChannel, GetTopicsEventType, Payload{nil, true})
 						}
 						if IsKey(event, 'd') {
-							row, _ := table.GetSelection()
-							topicName := table.GetCell(row, 0).Text
+							topicName, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
 							Publish(
 								TopicsChannel,
 								GetTopicEventType,
@@ -189,50 +195,44 @@ func (app *App) Topics(force bool) {
 						}
 
 						if IsKey(event, 'n') {
-							if app.IsCurrentClusterReadOnly() {
-								SendStatusWithDefaultTTL(
-									"[red]cluster is in read-only mode",
-								)
+							if !app.Allowed() {
 								return event
 							}
-							app.CreateTopic()
-							app.ShowModalPage(CreateTopic)
+							app.CreateTopicDocument()
 						}
 
 						if event.Key() == tcell.KeyCtrlD {
-							if app.IsCurrentClusterReadOnly() {
-								SendStatusWithDefaultTTL(
-									"[red]cluster is in read-only mode",
-								)
-								return event
+							topicName, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
 							}
-							row, _ := table.GetSelection()
-							topicName := table.GetCell(row, 0).Text
 							app.DeleteTopic(topicName)
-							app.ShowModalPage(DeleteTopic)
 						}
 
 						if IsKey(event, 'e') {
-							if app.IsCurrentClusterReadOnly() {
-								SendStatusWithDefaultTTL(
-									"[red]cluster is in read-only mode",
-								)
+							if !app.Allowed() {
 								return event
 							}
-							row, _ := table.GetSelection()
-							topicName := table.GetCell(row, 0).Text
+							topicName, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
 							app.UpdateTopic(topicName)
 						}
 
 						if IsKey(event, 'c') {
-							row, _ := table.GetSelection()
-							topicName := table.GetCell(row, 0).Text
+							topicName, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
 							app.ConsumeWithLastParams(topicName)
 						}
 
 						if IsKey(event, '.') {
-							row, _ := table.GetSelection()
-							topicName := table.GetCell(row, 0).Text
+							topicName, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
 							app.ShowExtraActions(TopicsExtraActions, topicName)
 						}
 
@@ -254,6 +254,7 @@ func (app *App) Topics(force bool) {
 								app.InternalTopicPatterns,
 							)
 							table.ScrollToBeginning()
+							app.RestoreSelection(pageKey, table, afterHeaderRow)
 							return event
 						}
 
@@ -275,6 +276,7 @@ func (app *App) Topics(force bool) {
 								app.InternalTopicPatterns,
 							)
 							table.ScrollToBeginning()
+							app.RestoreSelection(pageKey, table, afterHeaderRow)
 							return event
 						}
 
@@ -297,6 +299,7 @@ func (app *App) Topics(force bool) {
 								app.InternalTopicPatterns,
 							)
 							table.ScrollToBeginning()
+							app.RestoreSelection(pageKey, table, afterHeaderRow)
 							return event
 						}
 
@@ -328,6 +331,7 @@ func (app *App) Topics(force bool) {
 							}
 							updateTitle(filterText)
 							table.ScrollToBeginning()
+							app.RestoreSelection(pageKey, table, afterHeaderRow)
 							return event
 						}
 
@@ -346,6 +350,10 @@ func (app *App) Topics(force bool) {
 						)
 						updateTitle(text)
 						table.ScrollToBeginning()
+						// The rows the cursor pointed at are gone; without this the selection
+						// is left past the end of the filtered table and every row action
+						// reads an empty cell.
+						app.RestoreSelection(pageKey, table, afterHeaderRow)
 					})
 
 					// redraw rebuilds the rows in place, keeping the active filter or sort.
@@ -373,6 +381,7 @@ func (app *App) Topics(force bool) {
 								app.InternalTopicPatterns,
 							)
 						}
+						app.RestoreSelection(pageKey, table, afterHeaderRow)
 					}
 
 					// Fill the Size column asynchronously. AllTopicsLogDirSizes issues a single
@@ -422,8 +431,8 @@ func (app *App) Topics(force bool) {
 				cancel()
 				return
 			case <-ctx.Done():
-				log.Error().Msg("timeout while to list topics")
-				SendStatusWithDefaultTTL("[red]timeout while to list topics")
+				log.Error().Msg("timeout while listing topics")
+				SendStatusWithDefaultTTL("[red]timeout while listing topics")
 				return
 			}
 		}
@@ -594,200 +603,6 @@ func (app *App) TopicProducers(name string) {
 	}()
 }
 
-func (app *App) CreateTopic() {
-	params := &TopicParams{
-		TopicName:         "",
-		ReplicationFactor: -1,
-		Partitions:        -1,
-		Config:            make(map[string]string),
-	}
-	width := 40
-
-	topicName := tview.NewInputField().
-		SetFieldWidth(width).
-		SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			)).
-		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder))
-
-	replicationFactor := tview.NewInputField().
-		SetFieldWidth(width).
-		SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			)).
-		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder))
-	replicationFactor.SetAcceptanceFunc(tview.InputFieldInteger)
-
-	partitions := tview.NewInputField().
-		SetFieldWidth(width).
-		SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			)).
-		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder))
-	partitions.SetAcceptanceFunc(tview.InputFieldInteger)
-
-	// Text area for optional properties (multi-line)
-	configTextArea := tview.NewTextArea().
-		SetPlaceholder(`Enter properties (one per line):
-cleanup.policy=delete
-retention.ms=604800000`).
-		SetPlaceholderStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Placeholder),
-			))
-
-	selection := tview.NewTable()
-	selection.SetCell(
-		0,
-		0,
-		tview.NewTableCell("Name:").
-			SetAlign(tview.AlignRight).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
-	)
-	selection.SetCell(
-		1,
-		0,
-		tview.NewTableCell("Replication factor:").
-			SetAlign(tview.AlignRight).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
-	)
-	selection.SetCell(
-		2,
-		0,
-		tview.NewTableCell("Partitions:").
-			SetAlign(tview.AlignRight).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
-	)
-	selection.SetCell(
-		3,
-		0,
-		tview.NewTableCell("Configs (optional):").
-			SetAlign(tview.AlignRight).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
-	)
-	selection.SetSelectable(true, false)
-	selection.SetBorderPadding(0, 0, 1, 0)
-	selection.SetSelectedStyle(
-		tcell.StyleDefault.Foreground(
-			tcell.GetColor(app.Colors.Karat.Selection.FgColor),
-		).Background(
-			tcell.GetColor(app.Colors.Karat.Selection.BgColor),
-		),
-	)
-
-	f := tview.NewFlex()
-	f.SetDirection(tview.FlexColumn)
-	f.AddItem(selection, 20, 0, true)
-	f.AddItem(tview.NewBox(), 3, 0, false)
-
-	inputs := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(topicName, 1, 0, false).
-		AddItem(replicationFactor, 1, 0, false).
-		AddItem(partitions, 1, 0, false).
-		AddItem(configTextArea, 0, 1, false)
-
-	f.AddItem(inputs, 40, 0, false).
-		AddItem(tview.NewBox(), 0, 1, false)
-
-	topicName.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEsc {
-			params.TopicName = topicName.GetText()
-			app.SetFocus(selection)
-			app.Layout.Menu.SetMenu(CreateTopicPageMenu)
-		}
-		return event
-	})
-
-	replicationFactor.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEsc {
-			params.ReplicationFactor, _ = strconv.Atoi(replicationFactor.GetText())
-			app.SetFocus(selection)
-			app.Layout.Menu.SetMenu(CreateTopicPageMenu)
-		}
-		return event
-	})
-
-	partitions.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEsc {
-			params.Partitions, _ = strconv.Atoi(partitions.GetText())
-			app.SetFocus(selection)
-			app.Layout.Menu.SetMenu(CreateTopicPageMenu)
-		}
-		return event
-	})
-
-	configTextArea.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEsc {
-			propertiesText := configTextArea.GetText()
-			params.Config = parseConfig(propertiesText)
-			app.SetFocus(selection)
-			app.Layout.Menu.SetMenu(CreateTopicPageMenu)
-			return nil
-		}
-		return event
-	})
-
-	inputFields := []*tview.InputField{topicName, replicationFactor, partitions}
-	selection.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		row, _ := selection.GetSelection()
-
-		if IsKey(event, 'e') {
-			if row < len(inputFields) {
-				app.SetFocus(inputFields[row])
-				app.Layout.Menu.SetMenu(CreateTopicInputMenu)
-			} else if row == 3 {
-				app.SetFocus(configTextArea)
-				app.Layout.Menu.SetMenu(CreateTopicInputMenu)
-			}
-		}
-
-		if IsCtrlEnter(event) {
-			params.TopicName = topicName.GetText()
-			params.ReplicationFactor, _ = strconv.Atoi(replicationFactor.GetText())
-			params.Partitions, _ = strconv.Atoi(partitions.GetText())
-			params.Config = parseConfig(configTextArea.GetText())
-
-			if err := params.validate(); err != nil {
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
-				return event
-			}
-
-			app.CreateTopicResultHandler(
-				params.TopicName,
-				params.Partitions,
-				params.ReplicationFactor,
-				params.Config,
-			)
-			app.HideModalPage(CreateTopic)
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.HideModalPage(CreateTopic)
-		}
-
-		return event
-	})
-
-	flex := tview.NewFlex().
-		SetDirection(tview.FlexRow).
-		AddItem(f, 0, 1, true)
-	flex.SetTitle(" Create Topic ")
-	flex.SetBorder(true)
-
-	modal := util.NewTopicModal(flex)
-	app.Layout.PagesRegistry.UI.Pages.AddPage(CreateTopic, modal, true, true)
-	app.Layout.PagesRegistry.UI.Pages.ShowPage(CreateTopic)
-}
-
 func (app *App) CreateTopicResultHandler(
 	name string,
 	numPartitions int,
@@ -812,7 +627,7 @@ func (app *App) CreateTopicResultHandler(
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to create topic")
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to create topic: %s", err.Error()))
+				SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
 				cancel()
 				return
 			case <-ctx.Done():
@@ -850,8 +665,34 @@ func topicParamsFromDescription(
 	return partitions, replicationFactor, config
 }
 
-// CloneTopic fetches the source topic's description and opens a modal to create
-// a new topic with the same configuration.
+// topicConfigsFromDescription splits a described topic's writable configuration into the
+// overrides explicitly set on the topic and the settings still at their cluster default.
+// Sensitive entries are skipped, since DescribeConfigs returns them with an empty value
+// and writing that back would clear them.
+func topicConfigsFromDescription(
+	result *client.TopicResult,
+) (overrides, defaults map[string]string) {
+	overrides = make(map[string]string)
+	defaults = make(map[string]string)
+
+	for _, configResult := range result.Config {
+		for _, entry := range configResult.Config {
+			if entry.IsReadOnly || entry.IsSensitive {
+				continue
+			}
+			if entry.IsDefault {
+				defaults[entry.Name] = entry.Value
+			} else {
+				overrides[entry.Name] = entry.Value
+			}
+		}
+	}
+
+	return overrides, defaults
+}
+
+// CloneTopic fetches the source topic's description and opens its definition in the
+// editor as the starting point for a new topic.
 func (app *App) CloneTopic(sourceTopic string) {
 	resultCh := make(chan *client.TopicResult)
 	errorCh := make(chan error)
@@ -865,19 +706,9 @@ func (app *App) CloneTopic(sourceTopic string) {
 		for {
 			select {
 			case topicResult := <-resultCh:
-				partitionCount, replicationFactor, sourceConfig := topicParamsFromDescription(
-					topicResult,
-				)
-
 				app.QueueUpdateDraw(func() {
-					app.NewCloneTopicModal(
-						sourceTopic,
-						partitionCount,
-						replicationFactor,
-						sourceConfig,
-					)
-					app.ShowModalPage(CloneTopic)
 					ClearStatus()
+					app.CloneTopicDocument(sourceTopic, topicResult)
 				})
 				cancel()
 				return
@@ -895,220 +726,6 @@ func (app *App) CloneTopic(sourceTopic string) {
 			}
 		}
 	}()
-}
-
-// NewCloneTopicModal builds a "Clone Topic" modal pre-filled with the source topic's
-// partition count, replication factor, and non-default configuration entries.
-func (app *App) NewCloneTopicModal(
-	sourceTopic string,
-	srcPartitions int,
-	srcReplicationFactor int,
-	srcConfig map[string]string,
-) {
-	params := &TopicParams{
-		TopicName:         sourceTopic,
-		ReplicationFactor: srcReplicationFactor,
-		Partitions:        srcPartitions,
-		Config:            srcConfig,
-	}
-	width := 40
-
-	topicName := tview.NewInputField().
-		SetFieldWidth(width).
-		SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			)).
-		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder)).
-		SetText(sourceTopic)
-
-	replicationFactor := tview.NewInputField().
-		SetFieldWidth(width).
-		SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			)).
-		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder)).
-		SetText(fmt.Sprintf("%d", srcReplicationFactor))
-	replicationFactor.SetAcceptanceFunc(tview.InputFieldInteger)
-
-	partitions := tview.NewInputField().
-		SetFieldWidth(width).
-		SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			)).
-		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder)).
-		SetText(fmt.Sprintf("%d", srcPartitions))
-	partitions.SetAcceptanceFunc(tview.InputFieldInteger)
-
-	configTextArea := tview.NewTextArea()
-	var configLines []string
-	for key, value := range srcConfig {
-		configLines = append(configLines, fmt.Sprintf("%s=%s", key, value))
-	}
-	if len(configLines) > 0 {
-		sort.Strings(configLines)
-		configTextArea.SetText(strings.Join(configLines, "\n"), false)
-	} else {
-		configTextArea.SetPlaceholder(`Enter properties (one per line):
-cleanup.policy=delete
-retention.ms=604800000`).
-			SetPlaceholderStyle(
-				tcell.StyleDefault.Foreground(
-					tcell.GetColor(app.Colors.Karat.Placeholder),
-				))
-	}
-
-	selection := tview.NewTable()
-	selection.SetCell(
-		0,
-		0,
-		tview.NewTableCell("Name:").
-			SetAlign(tview.AlignRight).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
-	)
-	selection.SetCell(
-		1,
-		0,
-		tview.NewTableCell("Replication factor:").
-			SetAlign(tview.AlignRight).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
-	)
-	selection.SetCell(
-		2,
-		0,
-		tview.NewTableCell("Partitions:").
-			SetAlign(tview.AlignRight).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
-	)
-	selection.SetCell(
-		3,
-		0,
-		tview.NewTableCell("Configs (optional):").
-			SetAlign(tview.AlignRight).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
-	)
-	selection.SetSelectable(true, false)
-	selection.SetBorderPadding(0, 0, 1, 0)
-	selection.SetSelectedStyle(
-		tcell.StyleDefault.Foreground(
-			tcell.GetColor(app.Colors.Karat.Selection.FgColor),
-		).Background(
-			tcell.GetColor(app.Colors.Karat.Selection.BgColor),
-		),
-	)
-
-	f := tview.NewFlex()
-	f.SetDirection(tview.FlexColumn)
-	f.AddItem(selection, 20, 0, true)
-	f.AddItem(tview.NewBox(), 3, 0, false)
-
-	inputs := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(topicName, 1, 0, false).
-		AddItem(replicationFactor, 1, 0, false).
-		AddItem(partitions, 1, 0, false).
-		AddItem(configTextArea, 0, 1, false)
-
-	f.AddItem(inputs, 40, 0, false).
-		AddItem(tview.NewBox(), 0, 1, false)
-
-	topicName.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEsc {
-			params.TopicName = topicName.GetText()
-			app.SetFocus(selection)
-			app.Layout.Menu.SetMenu(CloneTopicPageMenu)
-		}
-		return event
-	})
-
-	replicationFactor.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEsc {
-			params.ReplicationFactor, _ = strconv.Atoi(replicationFactor.GetText())
-			app.SetFocus(selection)
-			app.Layout.Menu.SetMenu(CloneTopicPageMenu)
-		}
-		return event
-	})
-
-	partitions.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEsc {
-			params.Partitions, _ = strconv.Atoi(partitions.GetText())
-			app.SetFocus(selection)
-			app.Layout.Menu.SetMenu(CloneTopicPageMenu)
-		}
-		return event
-	})
-
-	configTextArea.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEsc {
-			propertiesText := configTextArea.GetText()
-			params.Config = parseConfig(propertiesText)
-			app.SetFocus(selection)
-			app.Layout.Menu.SetMenu(CloneTopicPageMenu)
-			return nil
-		}
-		return event
-	})
-
-	inputFields := []*tview.InputField{topicName, replicationFactor, partitions}
-	selection.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		row, _ := selection.GetSelection()
-
-		if IsKey(event, 'e') {
-			if row < len(inputFields) {
-				app.SetFocus(inputFields[row])
-				app.Layout.Menu.SetMenu(CloneTopicInputMenu)
-			} else if row == 3 {
-				app.SetFocus(configTextArea)
-				app.Layout.Menu.SetMenu(CloneTopicInputMenu)
-			}
-		}
-
-		if IsCtrlEnter(event) {
-			params.TopicName = topicName.GetText()
-			params.ReplicationFactor, _ = strconv.Atoi(replicationFactor.GetText())
-			params.Partitions, _ = strconv.Atoi(partitions.GetText())
-			params.Config = parseConfig(configTextArea.GetText())
-
-			if err := params.validate(); err != nil {
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
-				return event
-			}
-
-			app.CreateTopicResultHandler(
-				params.TopicName,
-				params.Partitions,
-				params.ReplicationFactor,
-				params.Config,
-			)
-			app.HideModalPage(CloneTopic)
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.HideModalPage(CloneTopic)
-		}
-
-		return event
-	})
-
-	flex := tview.NewFlex().
-		SetDirection(tview.FlexRow).
-		AddItem(f, 0, 1, true)
-	flex.SetTitle(fmt.Sprintf(" Clone Topic (from %s) ", sourceTopic))
-	flex.SetBorder(true)
-
-	modal := util.NewTopicModal(flex)
-	app.Layout.PagesRegistry.UI.Pages.AddPage(CloneTopic, modal, true, true)
-	app.Layout.PagesRegistry.UI.Pages.ShowPage(CloneTopic)
-	app.SetFocus(topicName)
-	app.Layout.Menu.SetMenu(CloneTopicInputMenu)
 }
 
 func (app *App) UpdateTopic(topicName string) {
@@ -1125,9 +742,8 @@ func (app *App) UpdateTopic(topicName string) {
 			select {
 			case topicResult := <-resultCh:
 				app.QueueUpdateDraw(func() {
-					app.NewUpdateTopicModal(topicName, topicResult)
-					app.ShowModalPage(EditTopic)
 					ClearStatus()
+					app.EditTopicDocument(topicName, topicResult)
 				})
 				cancel()
 				return
@@ -1147,19 +763,43 @@ func (app *App) UpdateTopic(topicName string) {
 	}()
 }
 
+// updatedTopicConfigMessage describes what an applied config update actually did, so a
+// change that only resets overrides is not reported as a plain update.
+func updatedTopicConfigMessage(name string, removed int) string {
+	if removed == 0 {
+		return fmt.Sprintf("topic '%s' config has been updated", name)
+	}
+	return fmt.Sprintf("topic '%s' config has been updated (%d reset to default)", name, removed)
+}
+
+// UpdateTopicResultHandler applies the edited topic settings: config is set, removed is
+// reset to the cluster default, and the partition count is grown when newPartitions
+// exceeds currentPartitions.
 func (app *App) UpdateTopicResultHandler(
 	name string,
 	currentPartitions int,
 	newPartitions int,
 	config map[string]string,
+	removed []string,
 ) {
 	c := app.GetCurrentKafkaClient()
 
-	if len(config) > 0 {
+	// The configuration and the partition count are two calls, either of which can be the
+	// only one to run. The list is refreshed once the last of them is done, and only when
+	// something can have changed — a refusal leaves the cluster as it was, and refreshing
+	// then would wipe the reason off the status line. Refreshing from the caller instead
+	// would race: both calls are asynchronous, and the list would be refetched while the
+	// cluster still holds the old topic.
+	updateDone := app.topicUpdateBarrier(
+		len(config) > 0 || len(removed) > 0,
+		newPartitions > currentPartitions,
+	)
+
+	if len(config) > 0 || len(removed) > 0 {
 		resultCh := make(chan bool)
 		errorCh := make(chan error)
 		SendStatusInfinite("updating topic configuration")
-		c.UpdateTopicConfig(name, config, resultCh, errorCh)
+		c.UpdateTopicConfig(name, config, removed, resultCh, errorCh)
 		ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
 		go func() {
@@ -1167,10 +807,11 @@ func (app *App) UpdateTopicResultHandler(
 				select {
 				case <-resultCh:
 					SendStatus(
-						fmt.Sprintf("topic '%s' config has been updated", name),
+						updatedTopicConfigMessage(name, len(removed)),
 						2*time.Second,
 						false,
 					)
+					updateDone(true)
 					cancel()
 					return
 				case err := <-errorCh:
@@ -1181,11 +822,13 @@ func (app *App) UpdateTopicResultHandler(
 							err.Error(),
 						),
 					)
+					updateDone(false)
 					cancel()
 					return
 				case <-ctx.Done():
 					log.Error().Msg("timeout while updating topic config")
 					SendStatusWithDefaultTTL("[red]timeout while updating topic config")
+					updateDone(true)
 					return
 				}
 			}
@@ -1212,6 +855,7 @@ func (app *App) UpdateTopicResultHandler(
 						2*time.Second,
 						false,
 					)
+					updateDone(true)
 					cancel()
 					return
 				case err := <-errorCh:
@@ -1219,11 +863,13 @@ func (app *App) UpdateTopicResultHandler(
 					SendStatusWithDefaultTTL(
 						fmt.Sprintf("[red]failed to increase partition count: %s", err.Error()),
 					)
+					updateDone(false)
 					cancel()
 					return
 				case <-ctx.Done():
 					log.Error().Msg("timeout while increasing partition count")
 					SendStatusWithDefaultTTL("[red]timeout while increasing partition count")
+					updateDone(true)
 					return
 				}
 			}
@@ -1231,33 +877,48 @@ func (app *App) UpdateTopicResultHandler(
 	}
 }
 
-func (app *App) DeleteTopic(topicName string) {
-	messageText := tview.NewTextView().
-		SetText(fmt.Sprintf("Topic [red::b]%s[-::-] will be deleted. Confirm?", topicName)).
-		SetTextAlign(tview.AlignCenter).
-		SetDynamicColors(true)
+// topicUpdateBarrier returns the function every leg of a topic update calls when it is done,
+// passing whether the cluster can have changed: true for a leg that succeeded or timed out —
+// a timeout says nothing about what the broker did with the request — and false for one the
+// broker refused.
+//
+// The last leg to report refreshes the topics list, so a two-leg update refreshes once and a
+// one-leg update refreshes as soon as its own leg is over. An update where every leg was
+// refused refreshes nothing: there is nothing new to show, and the refresh would replace the
+// refusal on the status line with its own progress message.
+//
+// It is called from the goroutines watching each leg, hence the mutex.
+func (app *App) topicUpdateBarrier(legs ...bool) func(changed bool) {
+	pending := 0
+	for _, running := range legs {
+		if running {
+			pending++
+		}
+	}
 
-	messageText.SetBorder(true).
-		SetTitle(" Confirm Deletion ").
-		SetBorderPadding(0, 0, 1, 1)
+	var (
+		mu      sync.Mutex
+		changed bool
+	)
+	return func(legChanged bool) {
+		mu.Lock()
+		pending--
+		changed = changed || legChanged
+		last, refresh := pending <= 0, changed
+		mu.Unlock()
 
-	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if IsCtrlEnter(event) {
-			app.DeleteTopicResultHandler(topicName)
-			app.HideModalPage(DeleteTopic)
+		if last && refresh {
 			Publish(TopicsChannel, GetTopicsEventType, Payload{nil, true})
 		}
+	}
+}
 
-		if event.Key() == tcell.KeyEsc {
-			app.HideModalPage(DeleteTopic)
-		}
-
-		return event
-	})
-
-	modal := util.NewConfirmationModal(messageText)
-	app.Layout.PagesRegistry.UI.Pages.AddPage(DeleteTopic, modal, true, true)
-	app.Layout.PagesRegistry.UI.Pages.ShowPage(DeleteTopic)
+// DeleteTopic asks in the status line before deleting the topic.
+func (app *App) DeleteTopic(topicName string) {
+	app.Modify(
+		fmt.Sprintf("delete topic '%s'?", topicName),
+		func() { app.DeleteTopicResultHandler(topicName) },
+	)
 }
 
 func (app *App) DeleteTopicResultHandler(name string) {
@@ -1274,6 +935,10 @@ func (app *App) DeleteTopicResultHandler(name string) {
 			select {
 			case <-resultCh:
 				SendStatus(fmt.Sprintf("topic '%s' has been deleted", name), 2*time.Second, false)
+				// The topic's own pages — description, producers, consume output — describe
+				// something that no longer exists, so they go with it.
+				cluster := app.Selected.Cluster.Name
+				app.QueueUpdateDraw(func() { app.RemovePagesFor(cluster, name) })
 				Publish(TopicsChannel, GetTopicsEventType, Payload{nil, true})
 				cancel()
 				return
@@ -1296,9 +961,9 @@ func (app *App) DeleteTopicResultHandler(name string) {
 // slow-but-successful recreate is not reported as a spurious timeout.
 const recreateUITimeout = 3 * time.Minute
 
-// RecreateTopic fetches the source topic's configuration and opens a confirmation modal to
-// delete the topic and re-create it empty with the same name, partition count, replication
-// factor, and config. All existing messages are lost.
+// RecreateTopic fetches the source topic's configuration and asks before deleting the topic
+// and re-creating it empty with the same name, partition count, replication factor, and
+// config. All existing messages are lost.
 func (app *App) RecreateTopic(sourceTopic string) {
 	resultCh := make(chan *client.TopicResult)
 	errorCh := make(chan error)
@@ -1317,14 +982,15 @@ func (app *App) RecreateTopic(sourceTopic string) {
 				)
 
 				app.QueueUpdateDraw(func() {
-					app.NewRecreateTopicModal(
+					// Cleared before the question is asked: the spinner reporting the
+					// fetch would otherwise stand in the status line beside it.
+					ClearStatus()
+					app.ConfirmRecreateTopic(
 						sourceTopic,
 						partitionCount,
 						replicationFactor,
 						sourceConfig,
 					)
-					app.ShowModalPage(RecreateTopic)
-					ClearStatus()
 				})
 				cancel()
 				return
@@ -1344,42 +1010,19 @@ func (app *App) RecreateTopic(sourceTopic string) {
 	}()
 }
 
-// NewRecreateTopicModal builds a confirmation modal warning that recreating the topic
-// deletes all of its data, then re-creates it with the captured settings on confirm.
-func (app *App) NewRecreateTopicModal(
+// ConfirmRecreateTopic warns in the status line that recreating the topic deletes all of its
+// data, then re-creates it with the captured settings on confirm.
+func (app *App) ConfirmRecreateTopic(
 	topicName string,
 	partitions int,
 	replicationFactor int,
 	config map[string]string,
 ) {
-	messageText := tview.NewTextView().
-		SetText(fmt.Sprintf(
-			"Topic [red::b]%s[-::-] will be deleted and recreated empty (all data lost). Confirm?",
-			topicName,
-		)).
-		SetTextAlign(tview.AlignCenter).
-		SetDynamicColors(true)
-
-	messageText.SetBorder(true).
-		SetTitle(" Confirm Recreation ").
-		SetBorderPadding(0, 0, 1, 1)
-
-	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if IsCtrlEnter(event) {
+	app.Modify(fmt.Sprintf("recreate topic '%s' empty, losing all its data?", topicName),
+		func() {
 			app.RecreateTopicResultHandler(topicName, partitions, replicationFactor, config)
-			app.HideModalPage(RecreateTopic)
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.HideModalPage(RecreateTopic)
-		}
-
-		return event
-	})
-
-	modal := util.NewConfirmationModal(messageText)
-	app.Layout.PagesRegistry.UI.Pages.AddPage(RecreateTopic, modal, true, true)
-	app.Layout.PagesRegistry.UI.Pages.ShowPage(RecreateTopic)
+		},
+	)
 }
 
 // RecreateTopicResultHandler drives the delete-then-create sequence and refreshes the
@@ -1454,210 +1097,154 @@ func (app *App) NewTopicsTable(
 	return table
 }
 
-func (app *App) NewUpdateTopicModal(topicName string, topicResult *client.TopicResult) {
-	width := 40
-
-	currentConfig := make(map[string]string)
-	partitionCount := 0
-	replicationFactor := 0
-
-	if len(topicResult.TopicDescriptions) > 0 {
-		desc := topicResult.TopicDescriptions[0]
-		partitionCount = len(desc.Partitions)
-		if len(desc.Partitions) > 0 {
-			replicationFactor = len(desc.Partitions[0].Replicas)
-		}
+// topicDocumentSession renders the topic as a YAML document, hands it to the editor and
+// parses what comes back. ok is false when the editor was aborted or the document was
+// rejected — the reason is already on the status line by then.
+func (app *App) topicDocumentSession(
+	header string,
+	name string,
+	replicationFactor int,
+	partitions int,
+	configs map[string]string,
+	defaults map[string]string,
+) (topicDocument, map[string]string, bool) {
+	buf, err := renderTopicDocument(header, name, replicationFactor, partitions, configs, defaults)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to render topic document")
+		SendStatusWithDefaultTTL("[red]failed to render topic document")
+		return topicDocument{}, nil, false
 	}
 
-	for _, configResult := range topicResult.Config {
-		for _, entry := range configResult.Config {
-			// Only include non-default, non-readonly configs
-			if !entry.IsDefault && !entry.IsReadOnly {
-				currentConfig[entry.Name] = entry.Value
-			}
-		}
+	edited, ok := app.OpenInEditor("topic-*.yaml", buf)
+	if !ok {
+		return topicDocument{}, nil, false
 	}
 
-	topicNameField := tview.NewInputField().
-		SetFieldWidth(width).
-		SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			)).
-		SetText(topicName)
-	topicNameField.SetDisabled(true)
-
-	replicationFactorField := tview.NewInputField().
-		SetFieldWidth(width).
-		SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			)).
-		SetText(fmt.Sprintf("%d", replicationFactor))
-	replicationFactorField.SetDisabled(true)
-
-	partitionsField := tview.NewInputField().
-		SetFieldWidth(width).
-		SetFieldStyle(
-			tcell.StyleDefault.Foreground(
-				tcell.GetColor(app.Colors.Karat.Foreground),
-			).Background(
-				tcell.GetColor(app.Colors.Karat.Background),
-			)).
-		SetPlaceholderTextColor(tcell.GetColor(app.Colors.Karat.Placeholder)).
-		SetText(fmt.Sprintf("%d", partitionCount))
-	partitionsField.SetAcceptanceFunc(tview.InputFieldInteger)
-
-	configTextArea := tview.NewTextArea()
-
-	var configLines []string
-	for key, value := range currentConfig {
-		configLines = append(configLines, fmt.Sprintf("%s=%s", key, value))
-	}
-	if len(configLines) > 0 {
-		configTextArea.SetText(strings.Join(configLines, "\n"), false)
+	doc, edits, _, err := parseTopicDocument(edited)
+	if err != nil {
+		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		return topicDocument{}, nil, false
 	}
 
-	selection := tview.NewTable()
-	selection.SetCell(
-		0,
-		0,
-		tview.NewTableCell("Name:").
-			SetAlign(tview.AlignRight).
-			SetSelectable(false).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
+	return doc, edits, true
+}
+
+// What a new topic starts at in the editor. One partition and one replica are what a
+// single-broker cluster takes, and are the smallest values that pass validation — a document
+// starting at zero has to be edited on both lines before it can be submitted at all.
+const (
+	defaultNewTopicPartitions        = 1
+	defaultNewTopicReplicationFactor = 1
+)
+
+// CreateTopicDocument opens Create Topic: an empty topic document goes to the editor and
+// what comes back is shown for confirmation before anything is created.
+func (app *App) CreateTopicDocument() {
+	doc, configs, ok := app.topicDocumentSession(
+		createTopicDocumentHeader,
+		"",
+		defaultNewTopicReplicationFactor,
+		defaultNewTopicPartitions,
+		nil,
+		nil,
 	)
-	selection.SetCell(
-		1,
-		0,
-		tview.NewTableCell("Replication factor:").
-			SetAlign(tview.AlignRight).
-			SetSelectable(false).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
+	if !ok {
+		return
+	}
+
+	params := TopicParams{
+		TopicName:         doc.Name,
+		ReplicationFactor: doc.ReplicationFactor,
+		Partitions:        doc.Partitions,
+		Config:            configs,
+	}
+	if err := params.validate(); err != nil {
+		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		return
+	}
+
+	app.CreateTopicConfirm(params)
+}
+
+// EditTopicDocument opens Edit Topic: the described topic goes to the editor and the diff
+// of what comes back is shown for confirmation before anything is applied.
+func (app *App) EditTopicDocument(topicName string, topicResult *client.TopicResult) {
+	partitionCount, replicationFactor := topicShape(topicResult)
+	currentConfig, defaultConfig := topicConfigsFromDescription(topicResult)
+
+	doc, configs, ok := app.topicDocumentSession(
+		editTopicDocumentHeader,
+		topicName,
+		replicationFactor,
+		partitionCount,
+		currentConfig,
+		defaultConfig,
 	)
-	selection.SetCell(
-		2,
-		0,
-		tview.NewTableCell("Partitions:").
-			SetAlign(tview.AlignRight).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
+	if !ok {
+		return
+	}
+	if err := validateTopicDocumentEdit(doc, topicName, replicationFactor, partitionCount); err != nil {
+		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		return
+	}
+
+	app.UpdateTopicConfirm(
+		topicChanges(topicName, partitionCount, doc.Partitions, currentConfig, configs),
 	)
-	selection.SetCell(
-		3,
-		0,
-		tview.NewTableCell("Configs:").
-			SetAlign(tview.AlignRight).
-			SetTextColor(tcell.GetColor(app.Colors.Karat.Label.FgColor)),
+}
+
+// CloneTopicDocument opens Clone Topic: the source topic's definition goes to the editor
+// under its own name, and the topic the edited document names is shown for confirmation
+// before anything is created. The document is a create, so an unchanged name would only
+// fail against the broker as "already exists" and is rejected here instead.
+func (app *App) CloneTopicDocument(sourceTopic string, topicResult *client.TopicResult) {
+	partitionCount, replicationFactor := topicShape(topicResult)
+	sourceConfig, defaultConfig := topicConfigsFromDescription(topicResult)
+
+	doc, configs, ok := app.topicDocumentSession(
+		cloneTopicDocumentHeader(sourceTopic),
+		sourceTopic,
+		replicationFactor,
+		partitionCount,
+		sourceConfig,
+		defaultConfig,
 	)
-	selection.SetSelectable(true, false)
-	selection.SetBorderPadding(0, 0, 1, 0)
-	selection.SetSelectedStyle(
-		tcell.StyleDefault.Foreground(
-			tcell.GetColor(app.Colors.Karat.Selection.FgColor),
-		).Background(
-			tcell.GetColor(app.Colors.Karat.Selection.BgColor),
-		),
-	)
+	if !ok {
+		return
+	}
 
-	f := tview.NewFlex()
-	f.SetDirection(tview.FlexColumn)
-	f.AddItem(selection, 20, 0, true)
-	f.AddItem(tview.NewBox(), 3, 0, false)
+	params := TopicParams{
+		TopicName:         doc.Name,
+		ReplicationFactor: doc.ReplicationFactor,
+		Partitions:        doc.Partitions,
+		Config:            configs,
+	}
+	if err := params.validate(); err != nil {
+		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		return
+	}
+	if err := validateCloneName(params.TopicName, sourceTopic); err != nil {
+		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		return
+	}
 
-	inputs := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(topicNameField, 1, 0, false).
-		AddItem(replicationFactorField, 1, 0, false).
-		AddItem(partitionsField, 1, 0, false).
-		AddItem(configTextArea, 0, 1, false)
+	app.CreateTopicConfirm(params)
+}
 
-	f.AddItem(inputs, 40, 0, false).
-		AddItem(tview.NewBox(), 0, 1, false)
+// topicShape returns a described topic's partition count and replication factor, both 0
+// when the description carries no partitions.
+func topicShape(result *client.TopicResult) (partitions, replicationFactor int) {
+	if len(result.TopicDescriptions) == 0 {
+		return 0, 0
+	}
 
-	var editedConfig map[string]string
+	desc := result.TopicDescriptions[0]
+	partitions = len(desc.Partitions)
+	if partitions > 0 {
+		replicationFactor = len(desc.Partitions[0].Replicas)
+	}
 
-	partitionsField.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEsc {
-			app.SetFocus(selection)
-			app.Layout.Menu.SetMenu(EditTopicPageMenu)
-		}
-
-		if IsKey(event, 'e') {
-			app.SetFocus(partitionsField)
-			app.Layout.Menu.SetMenu(EditTopicInputMenu)
-		}
-
-		return event
-	})
-
-	configTextArea.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEsc {
-			propertiesText := configTextArea.GetText()
-			editedConfig = parseConfig(propertiesText)
-			app.SetFocus(selection)
-			app.Layout.Menu.SetMenu(EditTopicPageMenu)
-			return nil
-		}
-
-		if IsKey(event, 'e') {
-			app.SetFocus(configTextArea)
-			app.Layout.Menu.SetMenu(EditTopicInputMenu)
-		}
-
-		return event
-	})
-
-	selection.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		row, _ := selection.GetSelection()
-
-		if IsKey(event, 'e') {
-			switch row {
-			case 2:
-				app.SetFocus(partitionsField)
-				app.Layout.Menu.SetMenu(EditTopicInputMenu)
-			case 3:
-				app.SetFocus(configTextArea)
-				app.Layout.Menu.SetMenu(EditTopicInputMenu)
-			}
-		}
-
-		if IsCtrlEnter(event) {
-			propertiesText := configTextArea.GetText()
-			editedConfig = parseConfig(propertiesText)
-
-			newPartitions, err := strconv.Atoi(partitionsField.GetText())
-			if err != nil || newPartitions <= 0 {
-				SendStatusWithDefaultTTL("[red]partitions must be a positive integer")
-				return event
-			}
-			if newPartitions < partitionCount {
-				SendStatusWithDefaultTTL("[red]partition count cannot be decreased")
-				return event
-			}
-
-			app.UpdateTopicResultHandler(topicName, partitionCount, newPartitions, editedConfig)
-			app.HideModalPage(EditTopic)
-			Publish(TopicsChannel, GetTopicsEventType, Payload{nil, false})
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.HideModalPage(EditTopic)
-		}
-
-		return event
-	})
-
-	flex := tview.NewFlex().
-		SetDirection(tview.FlexRow).
-		AddItem(f, 0, 1, true)
-	flex.SetTitle(fmt.Sprintf(" Edit Topic: %s ", topicName))
-	flex.SetBorder(true)
-
-	modal := util.NewTopicModal(flex)
-	app.Layout.PagesRegistry.UI.Pages.AddPage(EditTopic, modal, true, false)
+	return partitions, replicationFactor
 }
 
 // sizeColumn is the state of the optional Topics "Size" column: whether the feature is
@@ -1875,27 +1462,4 @@ func (tp *TopicParams) validate() error {
 		return fmt.Errorf("partitions must be greater than 0")
 	}
 	return nil
-}
-
-func parseConfig(text string) map[string]string {
-	properties := make(map[string]string)
-
-	lines := strings.Split(text, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			if key != "" && value != "" {
-				properties[key] = value
-			}
-		}
-	}
-
-	return properties
 }
