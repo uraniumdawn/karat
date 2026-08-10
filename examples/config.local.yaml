@@ -1,0 +1,43 @@
+karat:
+  # Config for the docker-compose stack in the repository root.
+  #
+  #   docker-compose up -d
+  #   mkdir -p .local/.config/karat
+  #   cp examples/config.local.yaml .local/.config/karat/config.yaml
+  #   KARAT_CONFIG_DIR=$PWD/.local go run main.go
+  #
+  # karat rewrites its config file on some actions, so the copy keeps this example intact.
+  mode: yolo # local throwaway cluster, no need to confirm every action
+  api:
+    timeout: 30
+    max_concurrency: 10
+  editor: "vim"
+  features:
+    topic_size: true
+    consumer_group_lag: true
+  ui:
+    internal_topic_patterns:
+      - "^__.*"
+      - "^connect-(configs|offsets|status)$"
+      - ".*-changelog$"
+      - ".*-repartition$"
+  clusters:
+    - name: local
+      properties:
+        # 127.0.0.1, not localhost: the broker only listens on IPv4, and localhost resolves
+        # to ::1 first on macOS
+        bootstrap.servers: 127.0.0.1:9092
+      selected: true
+  schema-registries:
+    - name: local
+      schema.registry.url: http://127.0.0.1:8081
+      selected: true
+  connect:
+    - name: local
+      url: http://127.0.0.1:8083
+      selected: true
+  cli_templates:
+    - kcat -b {{bootstrap}} -r {{srURL}} -t {{topic}} -o beginning -f
+      '{"Key":"%k","Value":%s,"Timestamp":%T,"Partition":%p,"Offset":%o,"Headers":"%h","Size":%S}\n'
+      -u | jq .
+    - kcat -b {{bootstrap}} -t {{topic}}

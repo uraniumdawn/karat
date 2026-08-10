@@ -64,22 +64,22 @@ func (app *App) RunResourcesEventHandler(ctx context.Context, in chan Event) {
 				return
 			case event := <-in:
 				switch event.Type {
-				case "cl", ClustersResourceEventType:
+				case ClustersResourceEventType:
 					Publish(ClustersChannel, GetClustersEventType, Payload{nil, false})
-				case "sr", SchemaRegistriesResourceEventType:
+				case SchemaRegistriesResourceEventType:
 					Publish(
 						SchemaRegistriesChannel,
 						GetSchemaRegistriesEventType,
 						Payload{nil, false},
 					)
 
-				case "cnt", ConnectResourceEventType:
+				case ConnectResourceEventType:
 					Publish(
 						ConnectChannel,
 						GetConnectEventType,
 						Payload{nil, false},
 					)
-				case "tps", TopicsResourceEventType:
+				case TopicsResourceEventType:
 					if !app.requireSelection(
 						app.isClusterSelected(app.Selected),
 						"[red]to perform operation, select cluster",
@@ -87,7 +87,7 @@ func (app *App) RunResourcesEventHandler(ctx context.Context, in chan Event) {
 						continue
 					}
 					Publish(TopicsChannel, GetTopicsEventType, Payload{nil, false})
-				case "grs", CgroupsResourceEventType:
+				case CgroupsResourceEventType:
 					if !app.requireSelection(
 						app.isClusterSelected(app.Selected),
 						"[red]to perform operation, select cluster",
@@ -95,7 +95,7 @@ func (app *App) RunResourcesEventHandler(ctx context.Context, in chan Event) {
 						continue
 					}
 					Publish(CgroupsChannel, GetCgroupsEventType, Payload{nil, false})
-				case "txns", TransactionsResourceEventType:
+				case TransactionsResourceEventType:
 					if !app.requireSelection(
 						app.isClusterSelected(app.Selected),
 						"[red]to perform operation, select cluster",
@@ -103,7 +103,7 @@ func (app *App) RunResourcesEventHandler(ctx context.Context, in chan Event) {
 						continue
 					}
 					Publish(TransactionsChannel, GetTransactionsEventType, Payload{nil, false})
-				case "acls", ACLsResourceEventType:
+				case ACLsResourceEventType:
 					if !app.requireSelection(
 						app.isClusterSelected(app.Selected),
 						"[red]to perform operation, select cluster",
@@ -111,7 +111,7 @@ func (app *App) RunResourcesEventHandler(ctx context.Context, in chan Event) {
 						continue
 					}
 					Publish(ACLsChannel, GetACLsEventType, Payload{nil, false})
-				case "nds", NodesResourceEventType:
+				case NodesResourceEventType:
 					if !app.requireSelection(
 						app.isClusterSelected(app.Selected),
 						"[red]to perform operation, select cluster",
@@ -119,7 +119,7 @@ func (app *App) RunResourcesEventHandler(ctx context.Context, in chan Event) {
 						continue
 					}
 					Publish(NodesChannel, GetNodesEventType, Payload{nil, false})
-				case "sjs", SubjectsResourceEventType:
+				case SubjectsResourceEventType:
 					if !app.requireSelection(
 						app.isSchemaRegistrySelected(app.Selected),
 						"[red]to perform operation, select Schema Registry",
@@ -127,7 +127,7 @@ func (app *App) RunResourcesEventHandler(ctx context.Context, in chan Event) {
 						continue
 					}
 					Publish(SubjectsChannel, GetSubjectsEventType, Payload{nil, false})
-				case "cnts", ConnectorsResourceEventType:
+				case ConnectorsResourceEventType:
 					if !app.requireSelection(
 						app.isConnectSelected(app.Selected),
 						"[red]to perform operation, select Connect",
@@ -135,10 +135,6 @@ func (app *App) RunResourcesEventHandler(ctx context.Context, in chan Event) {
 						continue
 					}
 					Publish(ConnectorsChannel, GetConnectorsEventType, Payload{nil, false})
-				case "q!":
-					app.Stop()
-				default:
-					SendStatusWithDefaultTTL("invalid command")
 				}
 			}
 		}

@@ -5,9 +5,13 @@
 package ui
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/uraniumdawn/karat/pkg/config"
+	"github.com/uraniumdawn/karat/pkg/consumer"
 	"github.com/uraniumdawn/karat/pkg/schemaregistry"
 )
 
@@ -66,7 +70,7 @@ func testApp() *App {
 
 func TestPrepareConsume(t *testing.T) {
 	t.Run("valid params", func(t *testing.T) {
-		prepared, ok := testApp().prepareConsume("orders", "-o 100 -p 3 -g my-group | error")
+		prepared, ok := testApp().prepareConsume("orders", "-o 100 -p 3 | error")
 		if !ok {
 			t.Fatal("prepareConsume() rejected valid params")
 		}
@@ -78,9 +82,6 @@ func TestPrepareConsume(t *testing.T) {
 		}
 		if len(prepared.params.Partitions) != 1 || prepared.params.Partitions[0] != 3 {
 			t.Errorf("Partitions = %v, want [3]", prepared.params.Partitions)
-		}
-		if prepared.params.Group != "my-group" {
-			t.Errorf("Group = %q, want my-group", prepared.params.Group)
 		}
 		if prepared.filter != "error" {
 			t.Errorf("filter = %q, want error", prepared.filter)
@@ -105,6 +106,69 @@ func TestPrepareConsume(t *testing.T) {
 	t.Run("unknown schema registry is rejected", func(t *testing.T) {
 		if _, ok := testApp().prepareConsume("orders", "-d avro -r absent"); ok {
 			t.Error("prepareConsume() accepted an unconfigured schema registry")
+		}
+	})
+}
+
+// TestDefaultConsumeParams checks the defaults against the parser that has to accept them:
+// a default nobody can parse is a default nobody can consume with.
+func TestDefaultConsumeParams(t *testing.T) {
+	t.Run("with a schema registry", func(t *testing.T) {
+		app := testApp()
+		app.Selected.SchemaRegistry = &config.SchemaRegistryConfig{Name: "local"}
+
+		spec, err := consumer.ParseConsumeArgs(app.defaultConsumeParams())
+		if err != nil {
+			t.Fatalf("ParseConsumeArgs(%q) error = %v", app.defaultConsumeParams(), err)
+		}
+		if spec.KeySerdes.Kind != consumer.SerdesAvro {
+			t.Errorf("key serdes = %v, want avro", spec.KeySerdes.Kind)
+		}
+		if spec.ValueSerdes.Kind != consumer.SerdesAvro {
+			t.Errorf("value serdes = %v, want avro", spec.ValueSerdes.Kind)
+		}
+		if spec.SRName != "local" {
+			t.Errorf("SRName = %q, want local", spec.SRName)
+		}
+		if spec.Count != 100 {
+			t.Errorf("count = %d, want 100", spec.Count)
+		}
+
+		// The double quotes must survive tokenizing, or the format renders as bare words.
+		line := consumer.ApplyFormat(consumer.Record{
+			Key:       "user-42",
+			Value:     `{"cost":0.02}`,
+			Partition: 2,
+			Offset:    1043,
+			Timestamp: time.Unix(0, 0).UTC(),
+			Size:      126,
+		}, spec.FormatStr, "stream-alpha")
+
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			t.Fatalf("default format produced invalid JSON %q: %v", line, err)
+		}
+		if decoded["Key"] != "user-42" {
+			t.Errorf("Key = %v, want user-42", decoded["Key"])
+		}
+		if value, ok := decoded["Value"].(map[string]any); !ok || value["cost"] != 0.02 {
+			t.Errorf("Value = %v, want the decoded object", decoded["Value"])
+		}
+	})
+
+	t.Run("without a schema registry", func(t *testing.T) {
+		app := testApp()
+
+		raw := app.defaultConsumeParams()
+		if strings.Contains(raw, "-d") {
+			t.Errorf("defaults = %q, want no -d without a schema registry", raw)
+		}
+		spec, err := consumer.ParseConsumeArgs(raw)
+		if err != nil {
+			t.Fatalf("ParseConsumeArgs(%q) error = %v", raw, err)
+		}
+		if spec.FormatStr == "" {
+			t.Error("defaults carry no format string")
 		}
 	})
 }

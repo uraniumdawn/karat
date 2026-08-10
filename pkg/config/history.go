@@ -15,9 +15,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// maxConsumeHistory caps the number of remembered consume parameter strings. Older entries
-// are dropped once the cap is reached.
-const maxConsumeHistory = 30
+const (
+	// maxTopicConsumeHistory caps the remembered consume parameter strings per cluster and
+	// topic. The cap is per topic so that consuming other topics can never evict a topic's
+	// own history, which is also where its default parameters come from.
+	maxTopicConsumeHistory = 30
+
+	// maxConsumeHistory caps the file as a whole. It only ever bites when many topics have
+	// been consumed on many clusters, since every topic is capped on its own first.
+	maxConsumeHistory = 300
+)
 
 // ConsumeEntry is one remembered consume parameter string, scoped to the cluster and topic
 // it was used on.
@@ -82,6 +89,7 @@ func (h *History) Save() error {
 
 // AddConsume records params as the newest entry for the given cluster and topic. Repeating
 // parameters that are already known moves them to the front instead of duplicating them.
+// The topic keeps at most maxTopicConsumeHistory entries, oldest dropped first.
 func (h *History) AddConsume(cluster, topic, params string) {
 	entries := make([]ConsumeEntry, 0, len(h.Consume)+1)
 	entries = append(entries, ConsumeEntry{
@@ -91,9 +99,14 @@ func (h *History) AddConsume(cluster, topic, params string) {
 		At:      time.Now().UTC(),
 	})
 
+	// The entry just added is this topic's first, so it counts against its cap.
+	kept := 1
 	for _, e := range h.Consume {
-		if e.Cluster == cluster && e.Topic == topic && e.Params == params {
-			continue
+		if e.Cluster == cluster && e.Topic == topic {
+			if e.Params == params || kept >= maxTopicConsumeHistory {
+				continue
+			}
+			kept++
 		}
 		entries = append(entries, e)
 	}
@@ -116,19 +129,15 @@ func (h *History) LastConsume(cluster, topic string) string {
 	return ""
 }
 
-// ConsumeFor returns the entries of the given cluster, the ones for topic first, each group
-// newest first.
+// ConsumeFor returns the entries remembered for the given cluster and topic, newest first.
+// Parameters used on other topics are not offered: they name partitions, offsets and serdes
+// that belong to a topic, and running them elsewhere is rarely what is meant.
 func (h *History) ConsumeFor(cluster, topic string) []ConsumeEntry {
-	var own, other []ConsumeEntry
+	var own []ConsumeEntry
 	for _, e := range h.Consume {
-		if e.Cluster != cluster {
-			continue
-		}
-		if e.Topic == topic {
+		if e.Cluster == cluster && e.Topic == topic {
 			own = append(own, e)
-		} else {
-			other = append(other, e)
 		}
 	}
-	return append(own, other...)
+	return own
 }

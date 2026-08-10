@@ -7,13 +7,10 @@ package consumer
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
-
-	"github.com/confluentinc/confluent-kafka-go/v2/schemaregistry/serde/avro"
 )
 
 // SerdesKind identifies the deserialization strategy for a key or value field.
@@ -67,24 +64,16 @@ func ParseSerdes(s string) (Serdes, error) {
 }
 
 // decodeWithSerdes decodes data using the given Serdes strategy.
-// deser is the Avro generic deserializer; it may be nil if Kind is not SerdesAvro.
+// decoder resolves Avro schemas; it may be nil when no Schema Registry is selected.
 // When Kind is SerdesRaw, returns string(data) unchanged.
-func decodeWithSerdes(data []byte, s Serdes, topic string, deser *avro.GenericDeserializer) (string, error) {
+func decodeWithSerdes(data []byte, s Serdes, decoder *avroDecoder) (string, error) {
 	if len(data) == 0 {
 		return "", nil
 	}
 	switch s.Kind {
 	case SerdesAvro:
-		if deser != nil && isConfluentWireFormat(data) {
-			val, err := deser.Deserialize(topic, data)
-			if err != nil {
-				return "", fmt.Errorf("avro deserialize: %w", err)
-			}
-			out, err := json.Marshal(val)
-			if err != nil {
-				return fmt.Sprintf("%v", val), nil
-			}
-			return string(out), nil
+		if decoder != nil && isConfluentWireFormat(data) {
+			return decoder.Decode(data)
 		}
 		return string(data), nil
 	case SerdesPack:

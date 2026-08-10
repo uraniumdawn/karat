@@ -82,7 +82,7 @@ func (app *App) Transactions() {
 		if err != nil {
 			log.Error().Err(err).Msg("failed to list transactions")
 			SendStatusWithDefaultTTL(
-				fmt.Sprintf("[red]failed to list transactions: %s", err.Error()),
+				fmt.Sprintf("[red]%s", err.Error()),
 			)
 			return
 		}
@@ -92,6 +92,11 @@ func (app *App) Transactions() {
 			title := util.BuildTitle(Transactions, "["+strconv.Itoa(len(txns))+"]")
 			table.SetTitle(title)
 			app.AddToPagesRegistry(pageKey, table, TransactionsPageMenu, true)
+
+			// A refresh builds a new table: without this the cursor lands on the first row,
+			// and the next key acts on a transaction the user did not pick.
+			app.RestoreSelection(pageKey, table, afterHeaderRow)
+			app.TrackSelection(pageKey, table, afterHeaderRow)
 
 			sortCol := 0
 			sortDesc := false
@@ -103,8 +108,10 @@ func (app *App) Transactions() {
 				}
 
 				if IsKey(event, 'd') {
-					row, _ := table.GetSelection()
-					txnID := table.GetCell(row, 0).Text
+					txnID, ok := selectedName(table, afterHeaderRow)
+					if !ok {
+						return nil
+					}
 					Publish(TransactionsChannel, GetTransactionEventType, Payload{txnID, false})
 				}
 
@@ -117,6 +124,7 @@ func (app *App) Transactions() {
 					}
 					sortTransactionsTable(table, txns, sortCol, sortDesc, labelColor)
 					table.ScrollToBeginning()
+					app.RestoreSelection(pageKey, table, afterHeaderRow)
 					return event
 				}
 
@@ -129,6 +137,7 @@ func (app *App) Transactions() {
 					}
 					sortTransactionsTable(table, txns, sortCol, sortDesc, labelColor)
 					table.ScrollToBeginning()
+					app.RestoreSelection(pageKey, table, afterHeaderRow)
 					return event
 				}
 
@@ -139,6 +148,9 @@ func (app *App) Transactions() {
 				filterTransactionsTable(table, txns, text, labelColor)
 				util.SetSearchableTableTitle(table, title, text)
 				table.ScrollToBeginning()
+				// The rows the cursor pointed at are gone; without this the selection is left
+				// past the end of the filtered table and every row action reads an empty cell.
+				app.RestoreSelection(pageKey, table, afterHeaderRow)
 			})
 
 			ClearStatus()

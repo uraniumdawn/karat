@@ -13,8 +13,6 @@ import (
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/confluentinc/confluent-kafka-go/v2/schemaregistry"
-	"github.com/confluentinc/confluent-kafka-go/v2/schemaregistry/serde"
-	"github.com/confluentinc/confluent-kafka-go/v2/schemaregistry/serde/avro"
 	"github.com/rs/zerolog/log"
 )
 
@@ -65,8 +63,6 @@ type Params struct {
 	// MaxCount stops consumption after this many messages per partition have been delivered.
 	// Zero means unlimited.
 	MaxCount int64
-	// Group sets the consumer group.id. When empty a unique ephemeral ID is generated.
-	Group string
 	// KeySerdes and ValueSerdes override Format-based decoding when non-zero.
 	KeySerdes   Serdes
 	ValueSerdes Serdes
@@ -108,26 +104,11 @@ func Consume(ctx context.Context, params Params, records chan<- Record, errs cha
 		return
 	}
 
-	var keyDeser *avro.GenericDeserializer
-	var valDeser *avro.GenericDeserializer
-
-	if params.KeySerdes.Kind == SerdesAvro && params.SRClient != nil {
-		keyDeser, err = avro.NewGenericDeserializer(
-			params.SRClient, serde.KeySerde, avro.NewDeserializerConfig(),
-		)
-		if err != nil {
-			errs <- fmt.Errorf("create avro key deserializer: %w", err)
-			return
-		}
-	}
-	if (params.ValueSerdes.Kind == SerdesAvro || params.Format == FormatAvro) && params.SRClient != nil {
-		valDeser, err = avro.NewGenericDeserializer(
-			params.SRClient, serde.ValueSerde, avro.NewDeserializerConfig(),
-		)
-		if err != nil {
-			errs <- fmt.Errorf("create avro value deserializer: %w", err)
-			return
-		}
+	// One decoder serves both key and value: schemas are resolved by the id inside each
+	// payload, so the key and the value need no separate configuration.
+	var decoder *avroDecoder
+	if params.SRClient != nil {
+		decoder = newAvroDecoder(params.SRClient)
 	}
 
 	numPartitions := len(partitions)
@@ -165,7 +146,7 @@ func Consume(ctx context.Context, params Params, records chan<- Record, errs cha
 
 			key := string(e.Key)
 			if params.KeySerdes.Kind != SerdesRaw {
-				decoded, decErr := decodeWithSerdes(e.Key, params.KeySerdes, params.Topic, keyDeser)
+				decoded, decErr := decodeWithSerdes(e.Key, params.KeySerdes, decoder)
 				if decErr != nil {
 					select {
 					case errs <- decErr:
@@ -181,9 +162,9 @@ func Consume(ctx context.Context, params Params, records chan<- Record, errs cha
 			var value string
 			var decErr error
 			if params.ValueSerdes.Kind != SerdesRaw {
-				value, decErr = decodeWithSerdes(e.Value, params.ValueSerdes, params.Topic, valDeser)
+				value, decErr = decodeWithSerdes(e.Value, params.ValueSerdes, decoder)
 			} else {
-				value, decErr = decodeValue(params.Topic, e.Value, params.Format, valDeser)
+				value, decErr = decodeValue(e.Value, params.Format, decoder)
 			}
 			if decErr != nil {
 				select {
@@ -259,11 +240,12 @@ func newConsumer(params Params) (*kafka.Consumer, func(), error) {
 	}
 
 	// Override/add consumer-specific settings.
-	groupID := params.Group
-	if groupID == "" {
-		groupID = fmt.Sprintf("karat-%d", time.Now().UnixNano())
-	}
-	_ = conf.SetKey("group.id", groupID)
+	//
+	// The group id is always karat's own and never the user's: partitions are assigned
+	// explicitly and nothing is ever committed, so naming a real group would put karat's
+	// client id on it without it ever joining or moving its offsets — a group that looks
+	// consumed and is not.
+	_ = conf.SetKey("group.id", fmt.Sprintf("karat-%d", time.Now().UnixNano()))
 	_ = conf.SetKey("enable.auto.commit", false)
 	// explicit assignment via Assign(), reject out-of-range offsets
 	_ = conf.SetKey("auto.offset.reset", "error")
@@ -407,23 +389,15 @@ func isConfluentWireFormat(payload []byte) bool {
 // For Avro, the payload must start with a Confluent Schema Registry magic byte
 // (0x00 or 0x01). If it doesn't, the function falls back to JSON/raw display
 // rather than returning an error, since the message was simply not Avro-encoded.
-func decodeValue(topic string, payload []byte, format Format, deser *avro.GenericDeserializer) (string, error) {
+func decodeValue(payload []byte, format Format, decoder *avroDecoder) (string, error) {
 	if len(payload) == 0 {
 		return "", nil
 	}
 
 	switch format {
 	case FormatAvro:
-		if deser != nil && isConfluentWireFormat(payload) {
-			val, err := deser.Deserialize(topic, payload)
-			if err != nil {
-				return "", fmt.Errorf("avro deserialize: %w", err)
-			}
-			out, err := json.Marshal(val)
-			if err != nil {
-				return fmt.Sprintf("%v", val), nil
-			}
-			return string(out), nil
+		if decoder != nil && isConfluentWireFormat(payload) {
+			return decoder.Decode(payload)
 		}
 		// Not a Confluent SR payload — fall through to JSON/raw display.
 		fallthrough

@@ -29,7 +29,7 @@ type Pair struct {
 var keys = map[string]Pair{
 	"sel": {
 		Key:   "<j/↓,k/↑>",
-		Value: "Selection",
+		Value: "Move",
 	},
 	"hjkl": {
 		Key:   "<hjkl>",
@@ -60,7 +60,7 @@ var keys = map[string]Pair{
 		Value: "Resources",
 	},
 	"opened": {
-		Key:   "<Ctrl+p>",
+		Key:   "<C-p>",
 		Value: "Opened Pages",
 	},
 	"search": {
@@ -76,7 +76,7 @@ var keys = map[string]Pair{
 		Value: "Details",
 	},
 	"upd": {
-		Key:   "<Ctrl+u>",
+		Key:   "<C-u>",
 		Value: "Update",
 	},
 	"auto_upd": {
@@ -108,7 +108,7 @@ var keys = map[string]Pair{
 		Value: "New Topic",
 	},
 	"delete_t": {
-		Key:   "<Ctrl+d>",
+		Key:   "<C-d>",
 		Value: "Delete Topic",
 	},
 	"toggle_internal": {
@@ -116,11 +116,11 @@ var keys = map[string]Pair{
 		Value: "Hide Internal",
 	},
 	"delete_cg": {
-		Key:   "<Ctrl+d>",
+		Key:   "<C-d>",
 		Value: "Delete Group",
 	},
 	"delete_conn": {
-		Key:   "<Ctrl+d>",
+		Key:   "<C-d>",
 		Value: "Delete Connector",
 	},
 	"create_conn": {
@@ -128,7 +128,7 @@ var keys = map[string]Pair{
 		Value: "New Connector",
 	},
 	"delete_offsets": {
-		Key:   "<Ctrl+d>",
+		Key:   "<C-d>",
 		Value: "Delete Offsets",
 	},
 	"copy_offsets": {
@@ -140,16 +140,12 @@ var keys = map[string]Pair{
 		Value: "Edit Topic",
 	},
 	"submit_ctrl": {
-		Key:   "<Ctrl+Enter>",
+		Key:   "<C-Enter>",
 		Value: "Submit",
 	},
 	"reset_offset": {
-		Key:   "<o>",
-		Value: "Reset Offsets",
-	},
-	"confirm": {
-		Key:   "<Ctrl+Enter>",
-		Value: "Confirm",
+		Key:   "<o/O>",
+		Value: "Reset Offsets by topic/partition",
 	},
 	"close": {
 		Key:   "<Esc>",
@@ -196,15 +192,15 @@ var keys = map[string]Pair{
 		Value: "Consume help",
 	},
 	"consume_editor": {
-		Key:   "<Ctrl+o>",
-		Value: "Edit in $EDITOR",
+		Key:   "<C-o>",
+		Value: "Edit in editor",
 	},
 	"consume_now": {
 		Key:   "<c>",
 		Value: "Consume",
 	},
 	"consume_history": {
-		Key:   "<Ctrl+r>",
+		Key:   "<C-r>",
 		Value: "History",
 	},
 	"history_select": {
@@ -224,7 +220,7 @@ var keys = map[string]Pair{
 		Value: "Terminate process",
 	},
 	"kill_cli": {
-		Key:   "<Ctrl+k>",
+		Key:   "<C-k>",
 		Value: "Kill process",
 	},
 	"remove_page": {
@@ -248,7 +244,7 @@ var keys = map[string]Pair{
 		Value: "JSON format",
 	},
 	"delete_cli": {
-		Key:   "<Ctrl+d>",
+		Key:   "<C-d>",
 		Value: "Remove page",
 	},
 	"enter": {
@@ -279,10 +275,6 @@ var keys = map[string]Pair{
 		Key:   "<H,L>",
 		Value: "Scroll Left/Right",
 	},
-	"batch_set_st": {
-		Key:   "<Enter>",
-		Value: "Select strategy",
-	},
 	"q": {
 		Key:   "<q>",
 		Value: "",
@@ -301,7 +293,7 @@ var keys = map[string]Pair{
 	},
 	"toggle_mode": {
 		Key:   "<Tab>",
-		Value: "Toggle Mode",
+		Value: "Cycle Mode",
 	},
 }
 
@@ -314,23 +306,13 @@ const (
 	SchemaRegistriesPageMenu            = "SchemaRegistriesPageMenu"
 	NodesPageMenu                       = "NodesPageMenu"
 	TopicsPageMenu                      = "TopicsPageMenu"
-	CreateTopicPageMenu                 = "CreateTopicPageMenu"
-	CreateTopicInputMenu                = "CreateTopicInputMenu"
-	DeleteTopicPageMenu                 = "DeleteTopicPageMenu"
-	RecreateTopicPageMenu               = "RecreateTopicPageMenu"
-	DeleteConsumerGroupPageMenu         = "DeleteConsumerGroupPageMenu"
-	CloneTopicPageMenu                  = "CloneTopicPageMenu"
-	CloneTopicInputMenu                 = "CloneTopicInputMenu"
-	EditTopicPageMenu                   = "EditTopicPageMenu"
-	EditTopicInputMenu                  = "EditTopicInputMenu"
-	ResetOffsetPageMenu                 = "ResetOffsetPageMenu"
+	OffsetsConfirmPageMenu              = "OffsetsConfirmPageMenu"
+	TopicConfirmPageMenu                = "TopicConfirmPageMenu"
 	CopyConsumerGroupPageMenu           = "CopyConsumerGroupPageMenu"
 	CopyConnectorOffsetsPageMenu        = "CopyConnectorOffsetsPageMenu"
 	ConsumerGroupsPageMenu              = "ConsumerGroupsPageMenu"
 	CloneSubjectPageMenu                = "CloneSubjectPageMenu"
 	CloneSubjectInputMenu               = "CloneSubjectInputMenu"
-	DeleteSubjectPageMenu               = "DeleteSubjectPageMenu"
-	DeleteSubjectVersionPageMenu        = "DeleteSubjectVersionPageMenu"
 	SubjectsPageMenu                    = "SubjectsPageMenu"
 	VersionsPageMenu                    = "VersionsPageMenu"
 	ConsumerGroupDescribePageMenu       = "ConsumerGroupDescribePageMenu"
@@ -353,8 +335,6 @@ const (
 	ConnectorConfigEditPageMenu         = "ConnectorConfigEditPageMenu"
 	CreateConnectorPageMenu             = "CreateConnectorPageMenu"
 	ConnectorActionsPageMenu            = "ConnectorActionsPageMenu"
-	DeleteConnectorPageMenu             = "DeleteConnectorPageMenu"
-	DeleteConnectorOffsetsPageMenu      = "DeleteConnectorOffsetsPageMenu"
 	ConnectPageMenu                     = "ConnectPageMenu"
 	FindByPageMenu                      = "FindByPageMenu"
 	FindSchemaByIDPageMenu              = "FindSchemaByIDPageMenu"
@@ -404,53 +384,6 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"remove_page",
 				"esc_confirm_opened",
 			},
-			CreateTopicPageMenu: {
-				"sel",
-				"edit",
-				"submit_ctrl",
-				"default",
-				"close",
-			},
-			CreateTopicInputMenu: {
-				"esc_confirm",
-			},
-			CloneTopicPageMenu: {
-				"sel",
-				"edit",
-				"submit_ctrl",
-				"default",
-				"close",
-			},
-			CloneTopicInputMenu: {
-				"esc_confirm",
-			},
-			EditTopicPageMenu: {
-				"sel",
-				"edit",
-				"submit_ctrl",
-				"close",
-			},
-			EditTopicInputMenu: {
-				"esc_confirm",
-			},
-			ResetOffsetPageMenu: {
-				"sel",
-				"batch_set_st",
-				"submit_ctrl",
-				"close",
-			},
-			DeleteTopicPageMenu: {
-				"confirm",
-				"cancel",
-			},
-			RecreateTopicPageMenu: {
-				"confirm",
-				"cancel",
-			},
-			DeleteConsumerGroupPageMenu: {
-				"confirm",
-				"cancel",
-			},
 			CliTemplatesPageMenu: {
 				"sel",
 				"copy_cli",
@@ -464,14 +397,12 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"res",
 				"dsc",
 				"config_help",
-				"upd",
 				"opened",
 				"forward",
 			},
 			SchemaRegistriesPageMenu: {
 				"sel",
 				"select",
-				"toggle_mode",
 				"res",
 				"opened",
 				"b/f",
@@ -479,7 +410,6 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 			ConnectPageMenu: {
 				"sel",
 				"select",
-				"toggle_mode",
 				"res",
 				"opened",
 				"b/f",
@@ -556,6 +486,14 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"opened",
 				"b/f",
 			},
+			OffsetsConfirmPageMenu: {
+				"submit_ctrl",
+				"cancel",
+			},
+			TopicConfirmPageMenu: {
+				"submit_ctrl",
+				"cancel",
+			},
 			ConsumerGroupDescribePageMenu: {
 				"res",
 				"reset_offset",
@@ -604,14 +542,6 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 			},
 			CloneSubjectInputMenu: {
 				"esc_confirm",
-			},
-			DeleteSubjectPageMenu: {
-				"confirm",
-				"cancel",
-			},
-			DeleteSubjectVersionPageMenu: {
-				"confirm",
-				"cancel",
 			},
 			SubjectsPageMenu: {
 				"sel",
@@ -690,14 +620,6 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"switch_act",
 				"submit_ctrl",
 				"close",
-			},
-			DeleteConnectorPageMenu: {
-				"confirm",
-				"cancel",
-			},
-			DeleteConnectorOffsetsPageMenu: {
-				"confirm",
-				"cancel",
 			},
 			CopyConnectorOffsetsPageMenu: {
 				"submit_ctrl",

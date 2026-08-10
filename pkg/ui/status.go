@@ -16,11 +16,26 @@ import (
 // being fetched in the background (topic sizes, consumer group lags).
 const loadingMarker = "…"
 
+// activeMarker is placed in the "Active" column of the clusters, Connect and Schema
+// Registry tables against the entry currently selected in the session.
+const activeMarker = "✓"
+
+// activeMarkerFor returns activeMarker when active, and an empty cell otherwise.
+func activeMarkerFor(active bool) string {
+	if active {
+		return activeMarker
+	}
+	return ""
+}
+
 // Status represents a status message with optional time-to-live
 type Status struct {
 	Message string
 	TTL     time.Duration // 0 means infinite (no auto-clear)
 	Spinner bool          // true to show spinner animation
+	// Prompt marks a confirmation question. It is the one message shown while a confirmation
+	// is pending, since everything else would paint over the question being asked.
+	Prompt bool
 }
 
 var (
@@ -49,6 +64,12 @@ func SendStatusInfiniteWithouSpinner(message string) {
 	StatusLineCh <- Status{Message: message, TTL: 0, Spinner: false}
 }
 
+// SendStatusPrompt sends a confirmation question: it never auto-clears, shows no spinner, and
+// is the only message displayed until it is answered.
+func SendStatusPrompt(message string) {
+	StatusLineCh <- Status{Message: message, TTL: 0, Spinner: false, Prompt: true}
+}
+
 // ClearStatus clears the status line immediately
 func ClearStatus() {
 	StatusLineCh <- Status{Message: "", TTL: 0, Spinner: false}
@@ -71,10 +92,17 @@ func (app *App) RunStatusLineHandler(ctx context.Context, in chan Status) {
 				return
 			case status := <-in:
 				app.QueueUpdateDraw(func() {
+					// A pending confirmation owns the status line: a background fetch
+					// reporting progress must not paint over the question being asked.
+					if app.confirmPending() && !status.Prompt {
+						log.Debug().Str("status", status.Message).
+							Msg("status suppressed while a confirmation is pending")
+						return
+					}
+
 					if status.Message != "" {
 						currentStatus = status.Message
 						spinnerActive = status.Spinner
-						app.Layout.StatusHint.SetText("")
 
 						if status.Spinner {
 							app.Layout.StatusLine.SetText(
@@ -94,13 +122,15 @@ func (app *App) RunStatusLineHandler(ctx context.Context, in chan Status) {
 						if status.TTL > 0 {
 							statusLineTimer = time.AfterFunc(status.TTL, func() {
 								app.QueueUpdateDraw(func() {
+									// A question outlives the TTL of the message it
+									// displaced, whose timer can have fired
+									// already.
+									if app.confirmPending() {
+										return
+									}
 									currentStatus = ""
 									spinnerActive = false
 									app.Layout.StatusLine.SetText("")
-									app.Layout.StatusHint.SetText(
-										app.versionHintText(),
-									)
-									app.resizeStatusHint()
 								})
 							})
 						}
@@ -108,8 +138,6 @@ func (app *App) RunStatusLineHandler(ctx context.Context, in chan Status) {
 						currentStatus = ""
 						spinnerActive = false
 						app.Layout.StatusLine.SetText("")
-						app.Layout.StatusHint.SetText(app.versionHintText())
-						app.resizeStatusHint()
 						if statusLineTimer != nil {
 							statusLineTimer.Stop()
 						}

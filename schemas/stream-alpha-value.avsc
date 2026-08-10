@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "Alpha",
+  "namespace": "io.karat.local",
+  "fields": [
+    {"name": "id", "type": "string"},
+    {"name": "group", "type": "string"},
+    {"name": "label", "type": "string"},
+    {"name": "kind", "type": "string"},
+    {"name": "region", "type": "string"},
+    {"name": "created_at", "type": "long"},
+    {"name": "amount", "type": "double"}
+  ]
+}

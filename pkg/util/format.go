@@ -51,18 +51,3 @@ func FormatNumber(n int64) string {
 	}
 	return result
 }
-
-// FormatSizeWithFallback formats size with appropriate units and fallback message.
-// If size is unavailable (bytes <= 0), shows message count instead.
-// If isEstimate is true, appends "(estimated)" to indicate approximation.
-func FormatSizeWithFallback(bytes, msgCount int64, isEstimate bool) string {
-	if bytes <= 0 {
-		return fmt.Sprintf("N/A (message count: %s)", FormatNumber(msgCount))
-	}
-
-	sizeStr := FormatBytes(bytes)
-	if isEstimate {
-		return sizeStr + " (estimated)"
-	}
-	return sizeStr
-}

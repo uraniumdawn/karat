@@ -1,17 +1,28 @@
 # Styles
 
-Copy a style file to `~/.config/karat/` and reference it in your `config.yaml`:
+Copy a style file to `~/.config/karat/` and name it in `karat.style`. A relative name is read
+from the config directory, so the filename on its own is enough; an absolute path or one
+starting with `~/` is taken as written. A style file Karat cannot read stops it at startup,
+naming the path it looked at:
 
 ```yaml
 karat:
-  style: uranium_v3  # filename without .yaml
+  style: uranium_v3.yaml
 ```
+
+Only the fields a style file sets are overridden; everything else keeps the built-in default, so
+a file with two colors in it is a perfectly good style.
+
+Each screenshot below is the Clusters page under that style: labels and column headers in the
+label color, keys in the keybinding color with their descriptions beside them, the page title
+and border in the title and border colors, and the selected row in the selection colors.
 
 ---
 
 ## uranium_v3
 
-Dark background with orange/amber accents and grey keybindings.
+Charcoal background, orange labels and title, green keys with grey descriptions, and a cream
+selection that inverts the row it lands on.
 
 ![uranium_v3](uranium_v3.png)
 
@@ -19,7 +30,8 @@ Dark background with orange/amber accents and grey keybindings.
 
 ## uranium_v2
 
-Dark background with green accents.
+The same charcoal background with burnt-orange labels, and green carrying the title, border and
+selection.
 
 ![uranium_v2](uranium_v2.png)
 
@@ -27,7 +39,8 @@ Dark background with green accents.
 
 ## uranium
 
-Dark background with pink/magenta labels and green accents.
+Charcoal background with magenta labels against a bright green title, border and selection —
+the loudest of the three.
 
 ![uranium](uranium.png)
 
@@ -35,7 +48,8 @@ Dark background with pink/magenta labels and green accents.
 
 ## gruvbox_dark
 
-Dark background with orange accents and orange selection highlight.
+Warm dark brown background, teal labels, and orange running through the keys, title, border and
+selection.
 
 ![gruvbox_dark](gruvbox_dark.png)
 
@@ -43,7 +57,8 @@ Dark background with orange accents and orange selection highlight.
 
 ## gruvbox_light
 
-Warm cream background with orange accents and dark orange selection highlight.
+The same palette inverted: cream background, teal labels, and a dark orange title, border and
+selection.
 
 ![gruvbox_light](gruvbox_light.png)
 
@@ -51,7 +66,7 @@ Warm cream background with orange accents and dark orange selection highlight.
 
 ## catppuccin_mocha
 
-Dark navy background with blue accents.
+Dark violet-tinted background, peach labels, and a soft blue title, border and selection.
 
 ![catppuccin_mocha](catppuccin_mocha.png)
 
@@ -59,7 +74,7 @@ Dark navy background with blue accents.
 
 ## catppuccin_latte
 
-Light background with blue accents and orange status bar.
+Cool light grey background, orange labels, and a strong blue title, border and selection.
 
 ![catppuccin_latte](catppuccin_latte.png)
 
@@ -67,7 +82,7 @@ Light background with blue accents and orange status bar.
 
 ## kanagawa_wave
 
-Dark blue-grey background with blue selection and golden accents.
+Dark blue-grey background, apricot labels, and a muted indigo title, border and selection.
 
 ![kanagawa_wave](kanagawa_wave.png)
 
@@ -75,7 +90,8 @@ Dark blue-grey background with blue selection and golden accents.
 
 ## kanagawa_lotus
 
-Warm parchment background with blue selection and golden accents.
+Warm parchment background, amber labels, and the same indigo title, border and selection as its
+dark twin.
 
 ![kanagawa_lotus](kanagawa_lotus.png)
 
@@ -83,7 +99,8 @@ Warm parchment background with blue selection and golden accents.
 
 ## solarized_dark
 
-Deep teal background with blue selection and orange accents.
+Deep teal background, rust labels, blue keys and selection, with a yellow title over a grey
+border — the only style that colors those two apart.
 
 ![solarized_dark](solarized_dark.png)
 
@@ -91,6 +108,6 @@ Deep teal background with blue selection and orange accents.
 
 ## blue_accents
 
-Dark background with blue accents and orange status bar.
+Near-black background, orange labels, and an electric blue title, border and selection.
 
 ![blue_accents](blue_accents.png)

@@ -251,6 +251,41 @@ func (c *Client) StopConnector(name string, resultChan chan<- bool, errorChan ch
 	c.doConnectorAction(name, http.MethodPut, "stop", resultChan, errorChan)
 }
 
+// connectorStateTimeout bounds how long WaitForConnectorState polls before giving up, and
+// connectorStatePollWait is the interval between polls.
+const (
+	connectorStateTimeout  = 5 * time.Second
+	connectorStatePollWait = 300 * time.Millisecond
+)
+
+// WaitForConnectorState polls the connector's status until it reports want, or until
+// connectorStateTimeout elapses.
+//
+// Pause, resume and stop are accepted by the REST API before the worker has acted on them, so
+// a status read straight after one of them still describes the old state. Callers that show
+// the state to the user wait here first; the error is informational, since a connector that
+// has not settled yet is not a failure of the action.
+// The first poll comes after one interval rather than immediately: restart leaves the
+// connector RUNNING until the worker picks the request up, and reading the status right away
+// would report the state the connector is being moved away from.
+func (c *Client) WaitForConnectorState(name, want string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), connectorStateTimeout)
+	defer cancel()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("connector '%s' did not reach state %s in time", name, want)
+		case <-time.After(connectorStatePollWait):
+		}
+
+		status, err := c.getConnectorStatus(ctx, name)
+		if err == nil && strings.EqualFold(status.Connector.State, want) {
+			return nil
+		}
+	}
+}
+
 // CreateConnector creates a new connector with the given name and configuration.
 func (c *Client) CreateConnector(
 	name string, config map[string]interface{},

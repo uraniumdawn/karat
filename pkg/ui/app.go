@@ -48,26 +48,17 @@ const (
 	ACLs                   = "ACLs"
 	Subjects               = "Subjects"
 	CloneSubject           = "Clone Subject"
-	DeleteSubject          = "Delete Subject"
-	DeleteSubjectVersion   = "Delete Subject Version"
 	Connectors             = "Connectors"
 	Connect                = "Connect"
 	OpenedPages            = "Opened pages"
-	CreateTopic            = "Create Topic"
-	CloneTopic             = "Clone Topic"
-	RecreateTopic          = "Recreate Topic"
-	DeleteTopic            = "Delete Topic"
-	DeleteConsumerGroup    = "Delete Consumer Group"
-	EditTopic              = "Edit Topic"
-	ResetOffset            = "Reset Offset"
+	OffsetsConfirm         = "Offsets Confirm"
+	TopicConfirm           = "Topic Confirm"
 	CopyConsumerGroup      = "Copy Consumer Group"
 	ConnectorConfigConfirm = "Connector Config Confirm"
 	CreateConnector        = "Create Connector"
 	ConnectorActions       = "Connector Actions"
 	TaskActions            = "Task Actions"
 	ConnectorOffsets       = "Connector Offsets"
-	DeleteConnector        = "Delete Connector"
-	DeleteConnectorOffsets = "Delete Connector Offsets"
 	CopyConnectorOffsets   = "Copy Connector Offsets"
 	CliTemplates           = "CLI Templates"
 	FindBy                 = "Find By"
@@ -96,6 +87,7 @@ type App struct {
 	Colors                *config.ColorConfig
 	History               *config.History   // remembered consume parameters, persisted
 	CurrentFilters        map[string]string // pageName -> filter text for search preservation
+	SelectedRows          map[string]string // pageName -> selected row name, kept across rebuilds
 	HideInternalTopics    bool              // hide __*, *-changelog, *-repartition topics
 	InternalTopicPatterns []*regexp.Regexp  // extra user-defined patterns for internal topics
 	cgroupPrevLag         map[string]map[string]int64
@@ -104,6 +96,7 @@ type App struct {
 	autoUpdateMu          sync.Mutex
 	autoUpdateMode        bool
 	autoUpdatePageKey     string
+	confirm               *confirmation // the question standing in the status line, if any
 	LatestVersion         string
 }
 
@@ -123,21 +116,6 @@ func (app *App) GetCurrentFranzClient() *franz.Client {
 	return app.FranzClients[app.Selected.Cluster.Name]
 }
 
-// IsCurrentClusterReadOnly reports whether the selected cluster is in read-only mode.
-func (app *App) IsCurrentClusterReadOnly() bool {
-	return app.Selected.Cluster != nil && app.Selected.Cluster.IsReadOnly()
-}
-
-// IsCurrentSchemaRegistryReadOnly reports whether the selected schema registry is in read-only mode.
-func (app *App) IsCurrentSchemaRegistryReadOnly() bool {
-	return app.Selected.SchemaRegistry != nil && app.Selected.SchemaRegistry.IsReadOnly()
-}
-
-// IsCurrentConnectReadOnly reports whether the selected Connect cluster is in read-only mode.
-func (app *App) IsCurrentConnectReadOnly() bool {
-	return app.Selected.Connect != nil && app.Selected.Connect.IsReadOnly()
-}
-
 func (app *App) GetCurrentSchemaRegistryClient() *schemaregistry.Client {
 	if app.Selected.SchemaRegistry == nil {
 		return nil
@@ -155,17 +133,15 @@ func (app *App) GetCurrentConnectClient() *connect.Client {
 // versionHintText returns the StatusHint display text, including an update arrow when a newer version is known.
 func (app *App) versionHintText() string {
 	if app.LatestVersion != "" {
-		return fmt.Sprintf(" κεράτιον v%s [yellow]→ v%s[-] ", Version, app.LatestVersion)
+		return fmt.Sprintf(" κεράτιον v%s → v%s ", Version, app.LatestVersion)
 	}
 	return " κεράτιον v" + Version + " "
 }
 
-// versionHintDisplayWidth returns the visual width of the hint text (markup stripped).
+// versionHintDisplayWidth returns the visual width of the hint text. The text carries no
+// colour markup, so its rune count is what it occupies.
 func (app *App) versionHintDisplayWidth() int {
-	if app.LatestVersion != "" {
-		return len([]rune(fmt.Sprintf(" κεράτιον v%s → v%s ", Version, app.LatestVersion)))
-	}
-	return len([]rune(" κεράτιον v" + Version + " "))
+	return len([]rune(app.versionHintText()))
 }
 
 // resizeStatusHint updates the StatusBar item width to fit the current hint text.
@@ -195,6 +171,15 @@ func NewApp() *App {
 	cfg, err := config.LoadAppConfig()
 	if err != nil {
 		fatal("failed to load config", err)
+	}
+
+	// config.yaml is kept equal to the configuration karat is actually running, defaults
+	// merged in — the mode among them. Comments do not survive the marshal; the file is the
+	// whole picture instead.
+	if written, err := cfg.SaveIfChanged(); err != nil {
+		log.Warn().Err(err).Msg("failed to write the merged config back")
+	} else if written {
+		log.Info().Msg("config.yaml rewritten with the merged configuration")
 	}
 
 	colors, err := config.LoadColorConfig(cfg.Karat.Style)
@@ -227,6 +212,7 @@ func NewApp() *App {
 		Colors:                colors,
 		History:               config.LoadHistory(),
 		CurrentFilters:        make(map[string]string),
+		SelectedRows:          make(map[string]string),
 		InternalTopicPatterns: internalTopicPatterns,
 		cgroupPrevLag:         make(map[string]map[string]int64),
 		autoUpdate:            make(map[string]*autoUpdateEntry),
@@ -238,7 +224,11 @@ func NewApp() *App {
 func InitLogger() {
 	zerolog.TimeFieldFormat = time.RFC3339
 
-	logFilePath := filepath.Join(os.Getenv("HOME"), ".config", "karat", "karat.log")
+	logFilePath, err := config.GetLogPath()
+	if err != nil {
+		fmt.Printf("failed to resolve the log path, %s\n", err.Error())
+		os.Exit(1)
+	}
 	logDir := filepath.Dir(logFilePath)
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		fmt.Printf("failed to create log directory, %s\n", err.Error())
@@ -331,6 +321,7 @@ func (app *App) Run() {
 
 	app.OpenPagesKeyHandler(app.Layout.PagesRegistry.UI.FilteredPages)
 	app.MainOperationKeyHandler()
+	app.SetAfterDrawFunc(app.drawModeBadge)
 
 	err := app.SetRoot(app.Layout.Content, true).Run()
 	if err != nil {
@@ -359,6 +350,15 @@ func (app *App) ApplyColors() {
 		InverseTextColor:            tview.Styles.InverseTextColor,
 		ContrastSecondaryTextColor:  tview.Styles.ContrastSecondaryTextColor,
 	}
+}
+
+// labelColor is the colour of a table's column headers. It answers with the terminal's default
+// when no style file is loaded, which is what tests build the app with.
+func (app *App) labelColor() tcell.Color {
+	if app.Colors == nil {
+		return tcell.ColorDefault
+	}
+	return tcell.GetColor(app.Colors.Karat.Label.FgColor)
 }
 
 func (app *App) isClusterSelected(selected Selected) bool {

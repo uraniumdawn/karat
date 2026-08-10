@@ -111,8 +111,33 @@ func (app *App) OpenPagesKeyHandler(filteredTable *tview.Table) {
 	})
 }
 
+// confirmationInFront reports whether a confirmation page is the page on screen. It is false
+// before there is a layout to ask, which is the state the application starts in.
+func (app *App) confirmationInFront() bool {
+	if app.Layout == nil || app.Layout.PagesRegistry == nil {
+		return false
+	}
+
+	front, _ := app.Layout.PagesRegistry.UI.Pages.GetFrontPage()
+
+	return app.Layout.PagesRegistry.IsTransientPage(front)
+}
+
 func (app *App) MainOperationKeyHandler() {
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		// <Ctrl-C> is tview's only built-in binding, and it fires only when this capture hands
+		// the event back untouched. Nothing swallowed below is worth being unable to quit for:
+		// a standing question and auto-update mode both consume every key otherwise.
+		if event.Key() == tcell.KeyCtrlC {
+			return event
+		}
+
+		// A standing question is answered before anything else looks at the key: while it
+		// stands, no page, modal or search field reacts to any of them.
+		if app.answer(event) {
+			return nil
+		}
+
 		if app.autoUpdateMode {
 			switch event.Key() {
 			case tcell.KeyTab:
@@ -121,6 +146,17 @@ func (app *App) MainOperationKeyHandler() {
 				app.ExitAutoUpdateMode()
 			}
 			return nil
+		}
+
+		// A confirmation page is answered or abandoned on its own terms. Switching away from it
+		// leaves it hidden with its pending action stranded, and nothing brings it back, so the
+		// keys that would navigate off it do nothing while it stands. <h>/<l> are covered by
+		// IsPersistentPage below, for the same reason.
+		if event.Key() == tcell.KeyCtrlP || IsKey(event, ':') {
+			if app.confirmationInFront() {
+				SendStatusWithDefaultTTL("finish the open confirmation first")
+				return nil
+			}
 		}
 
 		if IsKey(event, ':') {
@@ -132,6 +168,14 @@ func (app *App) MainOperationKeyHandler() {
 				}
 				// modal already open: fall through so table's SetInputCapture receives ':' and focuses
 				// search
+			}
+		}
+
+		// A modal is a page of its own, so the front page being a list page is what says the
+		// keypress belongs to the list rather than to something on top of it.
+		if event.Key() == tcell.KeyEsc && !app.IsSearchInFocus() && !app.IsInputFieldInFocus() {
+			if app.clearFilter() {
+				return nil
 			}
 		}
 
@@ -181,6 +225,9 @@ func (app *App) SearchKeyHandler(input *tview.InputField) {
 		}
 
 		if event.Key() == tcell.KeyEsc {
+			// Esc abandons the search: the text goes with it, which restores the full list
+			// through the change hook. <Enter> is what keeps a filter and leaves the field.
+			input.SetText("")
 			app.Layout.HideInlineSearch()
 			app.SetFocus(app.Layout.PagesRegistry.UI.Pages)
 			return nil
@@ -188,4 +235,25 @@ func (app *App) SearchKeyHandler(input *tview.InputField) {
 
 		return event
 	})
+}
+
+// clearFilter drops the filter on the page in front and reports whether there was one. The
+// search bar is hidden by then and only the page title still says "/text", so Esc on the list
+// is the way back to the whole list.
+func (app *App) clearFilter() bool {
+	page, _ := app.Layout.PagesRegistry.UI.Pages.GetFrontPage()
+	if app.CurrentFilters[page] == "" {
+		return false
+	}
+
+	search, ok := app.Layout.Search[page]
+	if !ok {
+		return false
+	}
+
+	search.SetText("")
+	app.Layout.HideInlineSearch()
+	app.SetFocus(app.Layout.PagesRegistry.UI.Pages)
+
+	return true
 }

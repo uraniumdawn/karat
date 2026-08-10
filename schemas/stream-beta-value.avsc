@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "Beta",
+  "namespace": "io.karat.local",
+  "fields": [
+    {"name": "id", "type": "string"},
+    {"name": "alpha_id", "type": "string"},
+    {"name": "group", "type": "string"},
+    {"name": "created_at", "type": "long"}
+  ]
+}

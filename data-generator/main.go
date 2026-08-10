@@ -1,125 +1,250 @@
+// Command data-generator writes Avro-encoded records to the local Kafka cluster so that karat's
+// topic, consumer group and Schema Registry pages have live data to show. Records are framed in
+// the Confluent wire format (magic byte, schema id, Avro binary), which is what kcat's
+// "-d key=avro -d value=avro" expects.
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hamba/avro/v2"
 	"github.com/segmentio/kafka-go"
 )
 
+// wireFormatMagicByte prefixes every Confluent-framed payload.
+const wireFormatMagicByte = 0
+
 var (
-	kafkaBroker     = getEnv("KAFKA_BROKER", "localhost:9092")
-	impressionTopic = getEnv("IMPRESSION_TOPIC", "ad-impressions")
-	clickTopic      = getEnv("CLICK_TOPIC", "ad-clicks")
-	eventRate       = getEnvInt("EVENT_RATE", 50)
-	clickRatio      = getEnvFloat("CLICK_RATIO", 0.1)
+	kafkaBroker    = getEnv("KAFKA_BROKER", "localhost:9092")
+	schemaRegistry = getEnv("SCHEMA_REGISTRY_URL", "http://localhost:8081")
+	schemaDir      = getEnv("SCHEMA_DIR", "/schemas")
+	alphaTopic     = getEnv("ALPHA_TOPIC", "stream-alpha")
+	betaTopic      = getEnv("BETA_TOPIC", "stream-beta")
+	eventRate      = getEnvInt("EVENT_RATE", 50)
+	linkRatio      = getEnvFloat("LINK_RATIO", 0.1)
 
-	campaigns = generateStringSlice("camp-", 10)
-	ads       = generateStringSlice("ad-", 100)
-	devices   = []string{"mobile", "desktop", "tablet"}
-	browsers  = []string{"chrome", "safari", "firefox", "edge"}
-	userPool  = 10000
-
-	campaignClickBoost = make(map[string]float64)
-	mu                 sync.RWMutex
+	groups  = generateStringSlice("group-", 10)
+	labels  = generateStringSlice("label-", 100)
+	kinds   = []string{"one", "two", "three"}
+	regions = []string{"north", "south", "east", "west"}
 )
 
-type Impression struct {
-	ImpressionID string  `json:"impression_id"`
-	UserID       string  `json:"user_id"`
-	CampaignID   string  `json:"campaign_id"`
-	AdID         string  `json:"ad_id"`
-	DeviceType   string  `json:"device_type"`
-	Browser      string  `json:"browser"`
-	Timestamp    int64   `json:"event_timestamp"`
-	Cost         float64 `json:"cost"`
+// Alpha is the record written to the alpha topic.
+type Alpha struct {
+	ID        string  `avro:"id"`
+	Group     string  `avro:"group"`
+	Label     string  `avro:"label"`
+	Kind      string  `avro:"kind"`
+	Region    string  `avro:"region"`
+	CreatedAt int64   `avro:"created_at"`
+	Amount    float64 `avro:"amount"`
 }
 
-type Click struct {
-	ClickID      string `json:"click_id"`
-	ImpressionID string `json:"impression_id"`
-	UserID       string `json:"user_id"`
-	Timestamp    int64  `json:"event_timestamp"`
+// Beta is the record written to the beta topic; it references an alpha record.
+type Beta struct {
+	ID        string `avro:"id"`
+	AlphaID   string `avro:"alpha_id"`
+	Group     string `avro:"group"`
+	CreatedAt int64  `avro:"created_at"`
+}
+
+// codec encodes values with one registered schema.
+type codec struct {
+	id     int
+	schema avro.Schema
+}
+
+// encode returns v as an Avro payload framed in the Confluent wire format.
+func (c *codec) encode(v any) ([]byte, error) {
+	payload, err := avro.Marshal(c.schema, v)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling avro: %w", err)
+	}
+
+	framed := make([]byte, 5+len(payload))
+	framed[0] = wireFormatMagicByte
+	binary.BigEndian.PutUint32(framed[1:5], uint32(c.id)) //nolint:gosec // schema ids are small
+	copy(framed[5:], payload)
+
+	return framed, nil
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	fmt.Println("Waiting for Kafka to be ready...")
-	time.Sleep(10 * time.Second)
+	alphaKey, err := register(ctx, alphaTopic+"-key")
+	if err != nil {
+		fatal(err)
+	}
+	alphaValue, err := register(ctx, alphaTopic+"-value")
+	if err != nil {
+		fatal(err)
+	}
+	betaKey, err := register(ctx, betaTopic+"-key")
+	if err != nil {
+		fatal(err)
+	}
+	betaValue, err := register(ctx, betaTopic+"-value")
+	if err != nil {
+		fatal(err)
+	}
 
-	initCampaignBoost()
-
-	writerImpression := newKafkaWriter(impressionTopic)
-	writerClick := newKafkaWriter(clickTopic)
-
-	defer writerImpression.Close()
-	defer writerClick.Close()
+	alphaWriter := newKafkaWriter(alphaTopic)
+	betaWriter := newKafkaWriter(betaTopic)
+	defer alphaWriter.Close()
+	defer betaWriter.Close()
 
 	ticker := time.NewTicker(time.Second / time.Duration(eventRate))
-	behaviorTicker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
 
-	fmt.Println("Starting event generation...")
+	fmt.Printf("Producing to %s and %s at %d events/s\n", alphaTopic, betaTopic, eventRate)
 
 	for {
 		select {
+		case <-ctx.Done():
+			fmt.Println("Shutting down.")
+			return
+
 		case <-ticker.C:
-			imp := generateImpression()
-			impBytes, _ := json.Marshal(imp)
-			_ = writerImpression.WriteMessages(context.Background(),
-				kafka.Message{
-					Key:   []byte(imp.ImpressionID),
-					Value: impBytes,
-				})
-
-			mu.RLock()
-			actualRatio := clickRatio * campaignClickBoost[imp.CampaignID]
-			mu.RUnlock()
-
-			if rand.Float64() < actualRatio {
-				delay := rand.Intn(9500) + 500
-				time.Sleep(time.Duration(delay) * time.Millisecond)
-
-				clk := Click{
-					ClickID:      uuid.New().String(),
-					ImpressionID: imp.ImpressionID,
-					UserID:       imp.UserID,
-					Timestamp:    imp.Timestamp + int64(delay),
-				}
-
-				clkBytes, _ := json.Marshal(clk)
-				_ = writerClick.WriteMessages(context.Background(),
-					kafka.Message{
-						Key:   []byte(clk.ClickID),
-						Value: clkBytes,
-					})
+			alpha := generateAlpha()
+			if err := write(ctx, alphaWriter, alphaKey, alphaValue, alpha.ID, alpha); err != nil {
+				fmt.Fprintf(os.Stderr, "writing to %s: %v\n", alphaTopic, err)
+				continue
 			}
 
-		case <-behaviorTicker.C:
-			fmt.Println("Updating campaign performance...")
-			updateCampaignBoost()
+			if rand.Float64() >= linkRatio { //nolint:gosec // sample data, not crypto
+				continue
+			}
+
+			beta := Beta{
+				ID:        uuid.New().String(),
+				AlphaID:   alpha.ID,
+				Group:     alpha.Group,
+				CreatedAt: time.Now().UnixMilli(),
+			}
+			if err := write(ctx, betaWriter, betaKey, betaValue, beta.ID, beta); err != nil {
+				fmt.Fprintf(os.Stderr, "writing to %s: %v\n", betaTopic, err)
+			}
 		}
 	}
 }
 
-func generateImpression() Impression {
-	return Impression{
-		ImpressionID: uuid.New().String(),
-		UserID:       fmt.Sprintf("user-%d", rand.Intn(userPool)+1),
-		CampaignID:   campaigns[rand.Intn(len(campaigns))],
-		AdID:         ads[rand.Intn(len(ads))],
-		DeviceType:   devices[rand.Intn(len(devices))],
-		Browser:      browsers[rand.Intn(len(browsers))],
-		Timestamp:    time.Now().UnixNano() / 1e6,
-		Cost:         round(rand.Float64()*0.49 + 0.01),
+// write encodes the key and the value with their own schema and produces one message.
+func write(ctx context.Context, w *kafka.Writer, keyCodec, valueCodec *codec, key string, value any) error {
+	encodedKey, err := keyCodec.encode(key)
+	if err != nil {
+		return err
+	}
+
+	encodedValue, err := valueCodec.encode(value)
+	if err != nil {
+		return err
+	}
+
+	return w.WriteMessages(ctx, kafka.Message{Key: encodedKey, Value: encodedValue})
+}
+
+// register posts <subject>.avsc from the schema directory to the Schema Registry and returns a
+// codec bound to the id the registry answers with. Registration is idempotent: re-posting a
+// schema that is already there returns its existing id.
+func register(ctx context.Context, subject string) (*codec, error) {
+	path := filepath.Join(schemaDir, subject+".avsc")
+
+	raw, err := os.ReadFile(path) //nolint:gosec // path comes from local configuration
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	schema, err := avro.Parse(string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+
+	body, err := json.Marshal(map[string]string{"schema": string(raw)})
+	if err != nil {
+		return nil, fmt.Errorf("building the registration request: %w", err)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 10; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+		}
+
+		id, err := post(ctx, subject, body)
+		if err != nil {
+			lastErr = err
+			fmt.Fprintf(os.Stderr, "registering %s: %v\n", subject, err)
+
+			continue
+		}
+
+		fmt.Printf("Subject %s has schema id %d\n", subject, id)
+
+		return &codec{id: id, schema: schema}, nil
+	}
+
+	return nil, fmt.Errorf("registering %s: %w", subject, lastErr)
+}
+
+// post sends one registration request and returns the schema id from the response.
+func post(ctx context.Context, subject string, body []byte) (int, error) {
+	url := fmt.Sprintf("%s/subjects/%s/versions", strings.TrimRight(schemaRegistry, "/"), subject)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/vnd.schemaregistry.v1+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("schema registry answered %s", resp.Status)
+	}
+
+	var registered struct {
+		ID int `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&registered); err != nil {
+		return 0, fmt.Errorf("decoding the response: %w", err)
+	}
+
+	return registered.ID, nil
+}
+
+func generateAlpha() Alpha {
+	return Alpha{
+		ID:        uuid.New().String(),
+		Group:     groups[rand.Intn(len(groups))],
+		Label:     labels[rand.Intn(len(labels))],
+		Kind:      kinds[rand.Intn(len(kinds))],
+		Region:    regions[rand.Intn(len(regions))],
+		CreatedAt: time.Now().UnixMilli(),
+		Amount:    float64(rand.Intn(50_000)) / 100,
 	}
 }
 
@@ -133,44 +258,23 @@ func newKafkaWriter(topic string) *kafka.Writer {
 
 func generateStringSlice(prefix string, count int) []string {
 	result := make([]string, count)
-	for i := 0; i < count; i++ {
+	for i := range result {
 		result[i] = fmt.Sprintf("%s%d", prefix, i+1)
 	}
+
 	return result
 }
 
-func round(val float64) float64 {
-	return float64(int(val*100)) / 100
-}
-
-func initCampaignBoost() {
-	for _, camp := range campaigns {
-		campaignClickBoost[camp] = rand.Float64()*0.7 + 0.8
-	}
-}
-
-func updateCampaignBoost() {
-	mu.Lock()
-	defer mu.Unlock()
-
-	for _, camp := range campaigns {
-		campaignClickBoost[camp] = rand.Float64()*0.7 + 0.8
-	}
-
-	anomaly := campaigns[rand.Intn(len(campaigns))]
-	if rand.Float64() < 0.5 {
-		campaignClickBoost[anomaly] = rand.Float64()*1.0 + 2.0
-		fmt.Printf("Anomaly: High CTR for %s\n", anomaly)
-	} else {
-		campaignClickBoost[anomaly] = rand.Float64()*0.2 + 0.1
-		fmt.Printf("Anomaly: Low CTR for %s\n", anomaly)
-	}
+func fatal(err error) {
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
 }
 
 func getEnv(key, fallback string) string {
 	if val, ok := os.LookupEnv(key); ok {
 		return val
 	}
+
 	return fallback
 }
 
@@ -180,6 +284,7 @@ func getEnvInt(key string, fallback int) int {
 			return parsed
 		}
 	}
+
 	return fallback
 }
 
@@ -189,5 +294,6 @@ func getEnvFloat(key string, fallback float64) float64 {
 			return parsed
 		}
 	}
+
 	return fallback
 }

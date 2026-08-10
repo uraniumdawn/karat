@@ -19,7 +19,6 @@ type ConsumeSpec struct {
 	ExitOnEnd   bool    // -e: stop when the last available message is received
 	Partitions  []int32 // -p: empty means consume all partitions
 	Count       int64   // -o <n>: per-partition message limit (0 = unlimited)
-	Group       string  // -g <group>: consumer group ID (empty = ephemeral)
 	Filter      string  // | <pattern>: show only records whose formatted line contains pattern
 	KeySerdes   Serdes  // -d key=<serdes> or -d <serdes>
 	ValueSerdes Serdes  // -d value=<serdes> or -d <serdes>
@@ -35,7 +34,6 @@ type ConsumeSpec struct {
 //   - -e@<ts>                                stop at timestamp, exclusive (requires -s@; overrides -o <n>)
 //   - -e                                     exit when all partitions reach high-water mark
 //   - -p <n>                                 restrict to partition n (may repeat)
-//   - -g <group>                             consumer group ID (default: ephemeral karat-<ts>)
 //   - -d <serdes>                            decode: avro | key=<serdes> | value=<serdes>
 //   - -r <sr-name>                           schema registry name (required for avro)
 //   - -f <format>                            format string (must be last flag)
@@ -125,13 +123,6 @@ func ParseConsumeArgs(args string) (ConsumeSpec, error) {
 				)
 			}
 			spec.Partitions = append(spec.Partitions, int32(n))
-
-		case tok == "-g":
-			i++
-			if i >= len(tokens) {
-				return ConsumeSpec{}, fmt.Errorf("-g requires a value")
-			}
-			spec.Group = tokens[i]
 
 		case tok == "-d":
 			i++

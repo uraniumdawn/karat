@@ -69,22 +69,36 @@ func TestAddConsume(t *testing.T) {
 		}
 	})
 
-	t.Run("cap drops the oldest entries", func(t *testing.T) {
+	t.Run("cap drops the oldest entries of that topic", func(t *testing.T) {
 		h := &History{}
-		for i := 0; i < maxConsumeHistory+10; i++ {
+		for i := 0; i < maxTopicConsumeHistory+10; i++ {
 			h.AddConsume("prod", "orders", "-o "+strconv.Itoa(i))
 		}
 
-		if len(h.Consume) != maxConsumeHistory {
-			t.Fatalf("len = %d, want %d", len(h.Consume), maxConsumeHistory)
+		if len(h.Consume) != maxTopicConsumeHistory {
+			t.Fatalf("len = %d, want %d", len(h.Consume), maxTopicConsumeHistory)
 		}
-		newest := "-o " + strconv.Itoa(maxConsumeHistory+9)
+		newest := "-o " + strconv.Itoa(maxTopicConsumeHistory+9)
 		if h.Consume[0].Params != newest {
 			t.Errorf("newest = %q, want %q", h.Consume[0].Params, newest)
 		}
 		oldestKept := "-o 10"
 		if last := h.Consume[len(h.Consume)-1].Params; last != oldestKept {
 			t.Errorf("oldest kept = %q, want %q", last, oldestKept)
+		}
+	})
+
+	// The point of the per-topic cap: a topic consumed once keeps its parameters however
+	// much other topics are consumed afterwards.
+	t.Run("a busy topic does not evict a quiet one", func(t *testing.T) {
+		h := &History{}
+		h.AddConsume("prod", "orders", "-o 100 -p 3")
+		for i := 0; i < maxTopicConsumeHistory+10; i++ {
+			h.AddConsume("prod", "payments", "-o "+strconv.Itoa(i))
+		}
+
+		if got := h.LastConsume("prod", "orders"); got != "-o 100 -p 3" {
+			t.Errorf("LastConsume(orders) = %q, want the entry it kept", got)
 		}
 	})
 }
@@ -121,10 +135,11 @@ func TestConsumeFor(t *testing.T) {
 	h.AddConsume("prod", "orders", "-o 2")
 	h.AddConsume("stage", "orders", "-o 3")
 	h.AddConsume("prod", "payments", "-o 4")
+	h.AddConsume("prod", "orders", "-o 5")
 
 	got := h.ConsumeFor("prod", "orders")
 
-	want := []string{"-o 2", "-o 4", "-o 1"} // topic first, then the rest newest first
+	want := []string{"-o 5", "-o 2"} // only this cluster's entries for this topic, newest first
 	gotParams := make([]string, 0, len(got))
 	for _, e := range got {
 		gotParams = append(gotParams, e.Params)
@@ -135,6 +150,9 @@ func TestConsumeFor(t *testing.T) {
 	for _, e := range got {
 		if e.Cluster != "prod" {
 			t.Errorf("entry from cluster %q leaked in", e.Cluster)
+		}
+		if e.Topic != "orders" {
+			t.Errorf("entry from topic %q leaked in", e.Topic)
 		}
 	}
 }

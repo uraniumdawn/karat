@@ -21,7 +21,7 @@ karat:
   selection:
     fgColor: "#272727"
     bgColor: "#ebdbb2"
-  itle: "orange"
+  title: "orange"
   border: "#ebdbb2"
   background: "#272727"
   foreground: "#ebdbb2"

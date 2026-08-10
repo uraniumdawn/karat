@@ -47,6 +47,17 @@ func GetConfigPath() (string, error) {
 	return filepath.Join(dir, "config.yaml"), nil
 }
 
+// GetLogPath returns the path to the application log file. It sits beside the configuration,
+// so a session pointed at another KARAT_CONFIG_DIR keeps its own log instead of writing into
+// the one the default instance is using.
+func GetLogPath() (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "karat.log"), nil
+}
+
 // GetHistoryPath returns the path to the file holding the application's usage history.
 func GetHistoryPath() (string, error) {
 	dir, err := configDir()

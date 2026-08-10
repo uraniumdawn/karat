@@ -6,7 +6,6 @@ package ui
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -52,7 +51,7 @@ func (app *App) RunSchemaRegistriesEventHandler(ctx context.Context, in chan Eve
 
 // addSchemaRegistriesTableHeader adds a fixed header row (row 0) with label-coloured cells.
 func addSchemaRegistriesTableHeader(table *tview.Table, labelColor tcell.Color) {
-	util.SetTableHeaders(table, labelColor, "Name", "URL", "Mode")
+	util.SetTableHeaders(table, labelColor, "Name", "URL", "Active")
 }
 
 // NewSchemaRegistriesTable creates a table displaying schema registries.
@@ -77,14 +76,12 @@ func (app *App) NewSchemaRegistriesTable() *tview.Table {
 	// Iterate over the config slice to preserve order from config file
 	row := 1
 	for _, sr := range app.Config.Karat.SchemaRegistries {
-		modeText := sr.Mode
-		if modeText == "" {
-			modeText = "regular"
-		}
+		active := app.isSchemaRegistrySelected(app.Selected) &&
+			app.Selected.SchemaRegistry.Name == sr.Name
 		table.
 			SetCell(row, 0, tview.NewTableCell(sr.Name)).
 			SetCell(row, 1, tview.NewTableCell(sr.SchemaRegistryURL)).
-			SetCell(row, 2, tview.NewTableCell(modeText))
+			SetCell(row, 2, tview.NewTableCell(activeMarkerFor(active)))
 		row++
 	}
 	return table
@@ -98,35 +95,12 @@ func (app *App) SchemaRegistriesTableInputHandler(st *tview.Table) {
 		sr := app.SchemaRegistries[name]
 
 		if event.Key() == tcell.KeyEnter {
-			app.SelectSchemaRegistry(sr, true)
-			ClearStatus()
-		}
-
-		if event.Key() == tcell.KeyTab {
 			if sr == nil {
 				return event
 			}
-			if sr.Mode == "read-only" {
-				sr.Mode = ""
-			} else {
-				sr.Mode = "read-only"
-			}
-			modeText := sr.Mode
-			if modeText == "" {
-				modeText = "regular"
-			}
-			st.GetCell(row, 2).SetText(modeText)
-			if app.isSchemaRegistrySelected(app.Selected) && app.Selected.SchemaRegistry.Name == name {
-				app.Layout.SetSelected(
-					app.Selected.Cluster,
-					app.Selected.SchemaRegistry,
-					app.Selected.Connect,
-				)
-			}
-			if err := app.Config.Save(); err != nil {
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to save config: %s", err.Error()))
-			}
-			return nil
+			app.SelectSchemaRegistry(sr, true)
+			util.SetColumnMarker(st, 2, row, activeMarker)
+			ClearStatus()
 		}
 
 		return event

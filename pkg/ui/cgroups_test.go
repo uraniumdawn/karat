@@ -10,6 +10,8 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/uraniumdawn/karat/pkg/client"
 )
 
 func groupListing(ids ...string) []kafka.ConsumerGroupListing {
@@ -136,5 +138,52 @@ func TestFilterConsumerGroupsTableHeaderMarksLoading(t *testing.T) {
 
 	if got := table.GetCell(0, 2).Text; got != "Lag"+loadingMarker {
 		t.Errorf("lag header = %q, want %q", got, "Lag"+loadingMarker)
+	}
+}
+
+// A refused target must report false so the caller knows the confirmation page never
+// opened and that nothing will be committed.
+func TestConsumerGroupOffsetsConfirmReportsRefusals(t *testing.T) {
+	tp := client.TopicPartition{Topic: "orders", Partition: 3}
+	committed := []client.CommittedOffset{{TopicPartition: tp, Committed: 100}}
+	targets := map[client.TopicPartition]client.OffsetTarget{
+		tp: {Kind: client.OffsetTargetAbsolute, Offset: 900},
+	}
+
+	tests := []struct {
+		name     string
+		resolved map[client.TopicPartition]client.ResolvedOffset
+	}{
+		{
+			// Past the end of a partition whose high watermark is lower than the offset the
+			// user typed for the whole topic.
+			name: "out of range",
+			resolved: map[client.TopicPartition]client.ResolvedOffset{
+				tp: {Target: 900, Earliest: 0, Latest: 500},
+			},
+		},
+		{
+			name: "already on target",
+			resolved: map[client.TopicPartition]client.ResolvedOffset{
+				tp: {Target: 100, Earliest: 0, Latest: 500},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := &App{}
+			if app.ConsumerGroupOffsetsConfirm("group", committed, targets, tt.resolved) {
+				t.Error("ConsumerGroupOffsetsConfirm() = true, want false for a refused target")
+			}
+			select {
+			case status := <-StatusLineCh:
+				if status.Message == "" {
+					t.Error("want the refusal on the status line")
+				}
+			default:
+				t.Error("want the refusal on the status line")
+			}
+		})
 	}
 }

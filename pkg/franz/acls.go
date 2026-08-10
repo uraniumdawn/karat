@@ -40,6 +40,16 @@ func (c *Client) ListACLs(ctx context.Context) ([]ACL, error) {
 		return nil, fmt.Errorf("failed to list acls: %w", err)
 	}
 
+	return aclsFromResults(results)
+}
+
+// aclsFromResults turns what DescribeACLs reported into karat's ACL rows, sorted, or into the
+// error to show instead.
+//
+// A cluster running without an authorizer answers every resource type with SECURITY_DISABLED.
+// That is not "no ACLs": showing an empty list would read as an open cluster with nothing
+// configured, when in truth nothing is enforced at all.
+func aclsFromResults(results kadm.DescribeACLsResults) ([]ACL, error) {
 	var acls []ACL
 	for _, r := range results {
 		if r.Err != nil {

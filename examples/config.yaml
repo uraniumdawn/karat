@@ -1,29 +1,69 @@
 karat:
+  # How much karat may change what it points at. <Tab> on the Clusters page cycles it
+  # and saves the choice back to this file.
+  #   read-only  a modifying action is refused
+  #   confirm    a modifying action asks in the status line first, answered with <Y> or <N>
+  #   yolo       a modifying action runs straight away, with no question asked
+  mode: confirm # read-only | confirm | yolo
   api:
     timeout: 30 # API call timeout in seconds
     max_concurrency: 10 # max parallel Kafka API calls (e.g. ListConsumerGroupOffsets)
+  # Editor used by every editor-backed view (topic configs, offsets, connector configs,
+  # consume parameters). Split on whitespace, so flags are allowed: "code --wait". This is
+  # the only place karat looks for an editor; an empty value falls back to vim.
+  editor: "vim"
+  features:
+    # Columns that cost extra Kafka API calls. Set one to false to drop both the column
+    # and the background call that fills it.
+    topic_size: true # Topics list "Size" column (DescribeLogDirs, franz-go)
+    consumer_group_lag: true # Consumer Groups list "Lag" column (ListConsumerGroupOffsets + ListOffsets)
+  ui:
+    # Regexes classifying topics as internal when internal topics are hidden (<i> on the
+    # Topics page). Replaces the built-in list entirely; [] treats no topic as internal.
+    # Override it to match your own naming, e.g. "_schemas" or "connect-.*".
+    internal_topic_patterns:
+      - "^__.*"
+      - ".*-changelog$"
+      - ".*-repartition$"
+  # Colors, see examples/style/ for ready-made themes. karat refuses to start when the path
+  # names a file that is not there, so it stays commented out until you put one in place.
+  style: ~/.config/karat/my_style.yaml
   clusters:
     - name: prod
-      mode: read-only
+      # Any librdkafka property is accepted here:
+      # https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
       properties:
         bootstrap.servers: kafka-prod:9094
+        # security.protocol: SASL_SSL
+        # sasl.mechanisms: PLAIN
+        # sasl.username: karat
+        # ${VAR} is expanded on load, and kept as a reference when the file is written back
+        # sasl.password: ${KAFKA_PROD_PASSWORD}
+      selected: true # auto-select this cluster on startup
     - name: dev
       properties:
         bootstrap.servers: kafka-dev:29094
   schema-registries:
     - name: prod
       schema.registry.url: http://schema-registry-prod:8081
+      # schema.registry.sasl.username: karat
+      # schema.registry.sasl.password: ${SCHEMA_REGISTRY_PROD_PASSWORD}
+      selected: true
     - name: dev
       schema.registry.url: http://schema-registry-dev:8081
   connect:
     - name: prod
-      mode: read-only
       url: https://connect-prod:8083
+      # username: karat
+      # password: ${CONNECT_PROD_PASSWORD}
       selected: true
     - name: dev
       url: https://connect-dev:8083
+  # Placeholders: {{bootstrap}} broker address(es), {{topic}} selected topic,
+  # {{srURL}} Schema Registry URL
   cli_templates:
-    - kcat -b {{bootstrap}} -t {{topic}} -o beginning -f
+    - kcat -b {{bootstrap}} -r {{srURL}} -t {{topic}} -o beginning -f
       '{"Key":"%k","Value":%s,"Timestamp":%T,"Partition":%p,"Offset":%o,"Headers":"%h","Size":%S}\n'
       -u | jq .
     - kcat -b {{bootstrap}} -t {{topic}}
+    - kafka-console-consumer --bootstrap-server {{bootstrap}} --topic {{topic}} --from-beginning

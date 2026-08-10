@@ -185,15 +185,30 @@ func toJSONValue(s string) string {
 	return string(quoted)
 }
 
+// defaultConsumeFormat is the -f string the defaults render records with: one JSON object
+// per record, the same shape as the kcat templates in config.yaml.
+//
+// It is single-quoted so that tokenize keeps the double quotes inside it. %k, %T and %h are
+// quoted there because -f substitutes them raw, as plain text; only %s is expected to carry
+// JSON of its own. A key or header that is not a bare string therefore breaks the JSON shape
+// — unlike the no -f path, where formatConsumeRecord escapes whatever it is handed.
+const defaultConsumeFormat = `-f '{"Key":"%k","Value":%s,"Timestamp":"%T",` +
+	`"Partition":%p,"Offset":%o,"Headers":"%h","Size":%S}'`
+
 // defaultConsumeParams returns the parameters a topic is consumed with when nothing else
-// is known about it: tail the last 100 records per partition as JSON, decoded through the
-// selected schema registry when there is one.
+// is known about it: tail the last 100 records per partition, decoded through the selected
+// schema registry when there is one, rendered with defaultConsumeFormat.
 func (app *App) defaultConsumeParams() string {
-	const fmtFlag = `'{"Key":"%k","Value":%s,"Timestamp":%T,"Partition":%p,"Offset":%o,"Headers":"%h","Size":%S}\n'`
 	if app.Selected.SchemaRegistry != nil {
-		return "-o 100 -r " + app.Selected.SchemaRegistry.Name + " -f " + fmtFlag
+		// Key and value are spelled out rather than written as the equivalent bare
+		// -d avro: a topic with a string key is then one deleted flag away, not a
+		// rewrite. -r names the registry they are decoded through, and a payload that
+		// is not Avro falls back to raw display.
+		return "-o 100 -d key=avro -d value=avro -r " +
+			app.Selected.SchemaRegistry.Name + " " + defaultConsumeFormat
 	}
-	return "-o 100 -f " + fmtFlag
+	// No registry to decode through, so no -d: avro without -r is refused by prepareConsume.
+	return "-o 100 " + defaultConsumeFormat
 }
 
 // preparedConsume is a validated consume request, ready to be handed to StartConsuming.
@@ -225,7 +240,6 @@ func (app *App) prepareConsume(topicName, raw string) (preparedConsume, bool) {
 		ExitOnEnd:   spec.ExitOnEnd,
 		Partitions:  spec.Partitions,
 		MaxCount:    spec.Count,
-		Group:       spec.Group,
 		KeySerdes:   spec.KeySerdes,
 		ValueSerdes: spec.ValueSerdes,
 	}
@@ -395,14 +409,12 @@ func (app *App) ConsumeHistoryModal(
 			tcell.GetColor(app.Colors.Karat.Selection.BgColor),
 		),
 	)
-	util.SetTableHeaders(table, labelColor, "Topic", "When", "Params")
+	util.SetTableHeaders(table, labelColor, "Params")
 
 	for i, e := range entries {
-		table.SetCell(i+1, 0, tview.NewTableCell(e.Topic))
-		table.SetCell(i+1, 1, tview.NewTableCell(e.At.Local().Format("2006-01-02 15:04")))
-		// Params take the rest of the row; tview clips them at the border and the full
-		// string still lands in the text area on select.
-		table.SetCell(i+1, 2, tview.NewTableCell(e.Params).SetExpansion(1))
+		// Params take the whole row; tview clips them at the border and the full string
+		// still lands in the text area on select.
+		table.SetCell(i+1, 0, tview.NewTableCell(e.Params).SetExpansion(1))
 	}
 	table.Select(1, 0)
 
@@ -439,7 +451,7 @@ func (app *App) ConsumeHistoryModal(
 	})
 
 	container := tview.NewFlex().SetDirection(tview.FlexRow).AddItem(table, 0, 1, true)
-	container.SetTitle(" Consume History ").SetBorder(true)
+	container.SetTitle(fmt.Sprintf(" Consume History: %s ", topicName)).SetBorder(true)
 
 	modal := util.NewBottomModal(container)
 	app.Layout.PagesRegistry.UI.Pages.AddPage(ConsumeHistory, modal, true, false)
@@ -447,7 +459,7 @@ func (app *App) ConsumeHistoryModal(
 	return true
 }
 
-// editConsumeParams hands the current parameters to $EDITOR and writes the result back
+// editConsumeParams hands the current parameters to the editor and writes the result back
 // into input. The temp file carries the consume reference as comments below the
 // parameters so the flags are at hand while editing; they are dropped on the way back.
 func (app *App) editConsumeParams(input *tview.TextArea) {
@@ -495,14 +507,15 @@ const consumeReferenceTemplate = `{k}Flags{/}
   {k}-e@{/}<ts>      stop at timestamp, exclusive (requires -s@; overrides -o <n>)
   {k}-e{/}           exit when all partitions reach high-water mark
   {k}-p{/}  <n>      restrict to partition (repeatable)
-  {k}-g{/}  <group>  consumer group ID (default: ephemeral)
   {k}-d{/}  <serdes> | key=<serdes> | value=<serdes>
              serdes:  avro  |  pack: [>|<][bBhHiIqQcs]+
              > big-endian (recommended)  < little-endian
              b/B int8/uint8   h/H int16/uint16   i/I int32/uint32
              q/Q int64/uint64  c char  s remaining bytes as string (must be last)
-             examples:    -d avro   -d key=>i   -d value=>qs
-  {k}-r{/}  <sr-name>  schema registry name (required for avro)
+             examples:    -d value=avro   -d key=>i   -d value=>qs
+             -d avro decodes key and value; a string key needs -d value=avro
+  {k}-r{/}  <sr-name>  schema registry name (required for avro; on its own it
+             only names the registry — decoding needs -d)
   {k}-f{/}  <format>   output format string (must be last flag)
   {k}|{/}   <pattern>  show only records whose output contains pattern
 
@@ -522,7 +535,7 @@ func (app *App) consumeReference(colored bool) string {
 	}
 	return strings.NewReplacer(
 		"{k}", "["+app.Colors.Karat.Label.FgColor+"]",
-		"{d}", "[gray]",
+		"{d}", "[grey]",
 		"{/}", "[-]",
 	).Replace(consumeReferenceTemplate)
 }

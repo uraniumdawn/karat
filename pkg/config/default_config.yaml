@@ -1,16 +1,13 @@
 karat:
+  mode: confirm
   api:
-    timeout: 30 # API call timeout in seconds
-    max_concurrency: 10 # max parallel Kafka API calls (e.g. ListConsumerGroupOffsets)
-  # Optional features that cost extra Kafka API calls. Set one to false in your own config
-  # to drop both the column and the background call that fills it.
+    timeout: 30
+    max_concurrency: 10
+  editor: "vim"
   features:
-    topic_size: true # Topics list "Size" column (DescribeLogDirs, franz-go)
-    consumer_group_lag: true # Consumer Groups list "Lag" column (ListConsumerGroupOffsets + ListOffsets)
+    topic_size: true
+    consumer_group_lag: true
   ui:
-    # Regex patterns used to classify topics as internal when hiding internal
-    # topics (press "i" on the Topics page). Override this list in your own
-    # config to match your naming conventions, e.g. "_schemas" or "connect-.*".
     internal_topic_patterns:
       - "^__.*"
       - ".*-changelog$"

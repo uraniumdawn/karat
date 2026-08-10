@@ -23,6 +23,9 @@ type PagesRegistry struct {
 	UI              *UI
 	PageMenuMap     map[string]string
 	SearchablePages []string
+	// transientReturn maps a transient page to the page that was in front when it opened.
+	// A transient page is not in OpenedPages, so there is nothing else to return to.
+	transientReturn map[string]string
 }
 
 // UI contains the main UI components including pages and opened pages table.
@@ -72,6 +75,7 @@ func NewPagesRegistry(colors *config.ColorConfig) *PagesRegistry {
 		},
 		PageMenuMap:     make(map[string]string),
 		SearchablePages: []string{},
+		transientReturn: make(map[string]string),
 	}
 
 	searchInput.SetChangedFunc(func(text string) {
@@ -109,9 +113,15 @@ func (pr *PagesRegistry) RebuildFilteredPages(filter string) {
 			displayTable.SetCell(i, 1, tview.NewTableCell(match.Str))
 		}
 	}
-	// Do NOT call Select(0, 0) here: it would trigger SetSelectionChangedFunc which calls
-	// SwitchToPage, overriding the user's selection on modal close.
-	// tview clamps the selectedRow to the valid range automatically on redraw.
+	// Only ever put the cursor back in range, never move it otherwise: SetSelectionChangedFunc
+	// switches the page underneath, so a gratuitous Select(0, 0) would override what the user
+	// picked. A filter, though, can leave the index past the last match, and Esc/Enter read the
+	// selection to decide where to go — out of range means they do nothing at all.
+	if rows := displayTable.GetRowCount(); rows > 0 {
+		if row, _ := displayTable.GetSelection(); row < 0 || row >= rows {
+			displayTable.Select(0, 0)
+		}
+	}
 }
 
 func (pr *PagesRegistry) SetupPageMenus() {
@@ -119,20 +129,11 @@ func (pr *PagesRegistry) SetupPageMenus() {
 	pr.PageMenuMap[SchemaRegistries] = SchemaRegistriesPageMenu
 	pr.PageMenuMap[Resources] = ResourcesPageMenu
 	pr.PageMenuMap[OpenedPages] = OpenedPagesMenu
-	pr.PageMenuMap[CreateTopic] = CreateTopicPageMenu
-	pr.PageMenuMap[DeleteTopic] = DeleteTopicPageMenu
-	pr.PageMenuMap[RecreateTopic] = RecreateTopicPageMenu
-	pr.PageMenuMap[DeleteConsumerGroup] = DeleteConsumerGroupPageMenu
-	pr.PageMenuMap[EditTopic] = EditTopicPageMenu
-	pr.PageMenuMap[ResetOffset] = ResetOffsetPageMenu
 	pr.PageMenuMap[CopyConsumerGroup] = CopyConsumerGroupPageMenu
 	pr.PageMenuMap[ConnectorActions] = ConnectorActionsPageMenu
 	pr.PageMenuMap[TaskActions] = TaskActionsPageMenu
 	pr.PageMenuMap[ConnectorOffsets] = ConnectorOffsetsPageMenu
-	pr.PageMenuMap[DeleteConnector] = DeleteConnectorPageMenu
-	pr.PageMenuMap[DeleteConnectorOffsets] = DeleteConnectorOffsetsPageMenu
 	pr.PageMenuMap[CopyConnectorOffsets] = CopyConnectorOffsetsPageMenu
-	pr.PageMenuMap[CreateConnector] = CreateConnectorPageMenu
 	pr.PageMenuMap[CliTemplates] = CliTemplatesPageMenu
 	pr.PageMenuMap[FindBy] = FindByPageMenu
 	pr.PageMenuMap[FindSchemaByID] = FindSchemaByIDPageMenu
@@ -193,6 +194,49 @@ func (app *App) AddToPagesRegistry(
 	}
 	app.Layout.Menu.SetMenu(menuToSet)
 	registry.UI.Pages.AddAndSwitchToPage(name, component, true)
+}
+
+// AddTransientPage shows a page that stands outside the opened-pages registry: a
+// confirmation the user either applies or abandons, and which is gone either way. It is
+// never listed in the opened-pages modal, <h>/<l> never iterate into it, and it is not
+// cached — reopening it means going through the action that produces it again.
+//
+// RemoveTransientPage is the only way back: it returns to the page that was in front here.
+func (app *App) AddTransientPage(name string, component tview.Primitive, menu string) {
+	registry := app.Layout.PagesRegistry
+	registry.PageMenuMap[name] = menu
+
+	// Recorded even when there is nothing to return to, so that the entry itself is what marks
+	// the page as transient.
+	previous, _ := registry.UI.Pages.GetFrontPage()
+	if previous == name {
+		previous = ""
+	}
+	registry.transientReturn[name] = previous
+
+	app.Layout.Menu.SetMenu(menu)
+	registry.UI.Pages.AddAndSwitchToPage(name, component, true)
+}
+
+// IsTransientPage reports whether name is a confirmation page put up by AddTransientPage.
+func (pr *PagesRegistry) IsTransientPage(name string) bool {
+	_, ok := pr.transientReturn[name]
+	return ok
+}
+
+// RemoveTransientPage removes a page added by AddTransientPage and switches back to the
+// page that was in front when it opened.
+func (app *App) RemoveTransientPage(name string) {
+	registry := app.Layout.PagesRegistry
+
+	registry.UI.Pages.RemovePage(name)
+	delete(registry.PageMenuMap, name)
+
+	previous, ok := registry.transientReturn[name]
+	delete(registry.transientReturn, name)
+	if ok && previous != "" {
+		app.SwitchToPage(previous)
+	}
 }
 
 // findPageInTable returns the row index of a page in the opened pages table, or -1 if not found.
@@ -337,21 +381,30 @@ func (app *App) SwitchToPage(name string) {
 
 func (app *App) ShowModalPage(pageName string) {
 	registry := app.Layout.PagesRegistry
-	if menu, ok := registry.PageMenuMap[pageName]; ok {
-		app.Layout.Menu.SetMenu(menu)
-		registry.UI.Pages.ShowPage(pageName)
-		registry.UI.Pages.SendToFront(pageName)
+	menu, ok := registry.PageMenuMap[pageName]
+	if !ok {
+		return
+	}
 
-		if pageName == OpenedPages {
-			registry.RebuildFilteredPages("")
-			currentPage, _ := registry.UI.Pages.GetFrontPage()
-			for i := 0; i < registry.UI.FilteredPages.GetRowCount(); i++ {
-				cell := registry.UI.FilteredPages.GetCell(i, 1)
-				if cell != nil && cell.Text == currentPage {
-					registry.UI.FilteredPages.Select(i, 0)
-					break
-				}
-			}
+	// Read before the modal goes on top: from there on the front page is the modal itself.
+	currentPage, _ := registry.UI.Pages.GetFrontPage()
+
+	app.Layout.Menu.SetMenu(menu)
+	registry.UI.Pages.ShowPage(pageName)
+	registry.UI.Pages.SendToFront(pageName)
+
+	if pageName != OpenedPages {
+		return
+	}
+
+	// The opened-pages list starts on the page the user came from, so closing it with Esc
+	// leaves them where they were.
+	registry.RebuildFilteredPages("")
+	for i := range registry.UI.FilteredPages.GetRowCount() {
+		cell := registry.UI.FilteredPages.GetCell(i, 1)
+		if cell != nil && cell.Text == currentPage {
+			registry.UI.FilteredPages.Select(i, 0)
+			break
 		}
 	}
 }
@@ -378,6 +431,25 @@ func (app *App) IsCurrentPageSearchable() bool {
 }
 
 func (app *App) RemoveFromPagesRegistry(name string) {
+	tableRow := app.removePage(name)
+
+	registry := app.Layout.PagesRegistry
+	if registry.UI.OpenedPages.GetRowCount() > 0 {
+		targetRow := tableRow
+		if targetRow >= registry.UI.OpenedPages.GetRowCount() {
+			targetRow = registry.UI.OpenedPages.GetRowCount() - 1
+		}
+		cell := registry.UI.OpenedPages.GetCell(targetRow, 1)
+		if cell != nil {
+			app.SwitchToPage(cell.Text)
+		}
+	}
+}
+
+// removePage takes a page out of the registry, the cache and the searchable list, and returns
+// the row it held. It does not move the user anywhere: that is the caller's decision, and a
+// cleanup of pages nobody is looking at must not.
+func (app *App) removePage(name string) int {
 	registry := app.Layout.PagesRegistry
 
 	registry.UI.Pages.RemovePage(name)
@@ -402,14 +474,41 @@ func (app *App) RemoveFromPagesRegistry(name string) {
 
 	app.Cache.Delete(name)
 
-	if registry.UI.OpenedPages.GetRowCount() > 0 {
-		targetRow := tableRow
-		if targetRow >= registry.UI.OpenedPages.GetRowCount() {
-			targetRow = registry.UI.OpenedPages.GetRowCount() - 1
+	return tableRow
+}
+
+// RemovePagesFor drops every opened page that names the given resource on the given cluster:
+// what a deleted topic, consumer group or connector leaves behind. Such a page is not
+// reachable from the cluster any more, but it stays in the opened-pages list and still opens,
+// showing what the resource looked like before it was deleted.
+//
+// Page keys are colon-joined, so a whole segment has to match: deleting "orders" must not take
+// "orders-retry" with it.
+func (app *App) RemovePagesFor(cluster, resource string) {
+	prefix := cluster + ":"
+	front, _ := app.Layout.PagesRegistry.UI.Pages.GetFrontPage()
+	frontRemoved := false
+
+	for _, name := range app.Layout.PagesRegistry.openedPageNames() {
+		if !strings.HasPrefix(name, prefix) {
+			continue
 		}
-		cell := registry.UI.OpenedPages.GetCell(targetRow, 1)
-		if cell != nil {
-			app.SwitchToPage(cell.Text)
+		for _, segment := range strings.Split(name, ":") {
+			if segment != resource {
+				continue
+			}
+			app.removePage(name)
+			if name == front {
+				frontRemoved = true
+			}
+			break
+		}
+	}
+
+	// Only when the page the user is on is one of the removed ones is there anywhere to go.
+	if frontRemoved {
+		if names := app.Layout.PagesRegistry.openedPageNames(); len(names) > 0 {
+			app.SwitchToPage(names[len(names)-1])
 		}
 	}
 }

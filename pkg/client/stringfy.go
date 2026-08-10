@@ -65,6 +65,10 @@ func (r *ResourceResult) String() string {
 	return sb.String()
 }
 
+// sizeUnavailable is what the description says in place of the on-disk size when karat has
+// none: the topic_size feature is off, or franz-go could not reach the cluster.
+const sizeUnavailable = "unavailable (needs the topic_size feature and franz-go connectivity)"
+
 func (r *TopicResult) String() string {
 	var sb strings.Builder
 
@@ -82,9 +86,10 @@ func (r *TopicResult) String() string {
 				_, _ = fmt.Fprintf(w, "Size Hint:\t%s\n", sizeHint)
 			}
 		} else {
-			estimatedSize, isEstimate := r.GetEstimatedSizeBytes()
-			_, _ = fmt.Fprintf(w, "Estimated Size:\t%s\n",
-				util.FormatSizeWithFallback(estimatedSize, totalMessages, isEstimate))
+			// No made-up number here: nothing the broker reports besides DescribeLogDirs says
+			// how many bytes a topic occupies, and a guess from the message count was wrong by
+			// orders of magnitude.
+			_, _ = fmt.Fprintf(w, "Size:\t%s\n", sizeUnavailable)
 		}
 		_, _ = fmt.Fprintf(w, "Messages Last Hour:\t%s\n", util.FormatNumber(r.GetMessagesLastHour()))
 	}
