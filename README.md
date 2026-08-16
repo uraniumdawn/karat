@@ -35,25 +35,27 @@ the keys that work here in the bar beside them, and the mode badge in the conten
 
 ![connectors](examples/screenshots/connectors.png)
 
-**Subjects** — the Schema Registry's subjects; `Enter` lists a subject's versions, `d` shows a
-schema:
+**Subjects** — the Schema Registry's subjects; `Enter` or `d` lists a subject's versions, and the
+same keys on a version show the schema:
 
 ![subjects](examples/screenshots/subjects.png)
 
 ## Features
 
 - **Multiple clusters** — connect to several clusters and switch between them while Karat is running.
+- **Three modes** — `read-only` refuses every modification, `confirm` asks before deletions and recreation, `yolo` asks nothing. `Tab` on the Clusters page cycles them, and the badge on the content border says which one you are in — red on `yolo`. **Keep production on `confirm` or `read-only`: in `yolo` a topic, consumer group or connector is gone the moment the key lands, and Kafka has nothing to roll back to.**
+- **Key reference** — `?` lists the bindings that work everywhere plus the ones the page in front adds. The bottom bar carries the per-page ones at all times.
 - **Topics** — browse, create, edit configs, increase partitions, delete.
 - **Topics as a document** — `n`, `e` and "Clone topic" open the topic as YAML in your editor. Settings still at their cluster default come along as commented-out lines, so overriding one is a matter of uncommenting it, and deleting a config line resets it. A review page shows what will change before anything is applied.
 - **Topic producers** — active producers and in-flight transactions, per partition.
 - **Hide internal topics** — `i` hides `__*`, `*-changelog` and `*-repartition`. The patterns are yours to change.
-- **Extra actions menu** — `.` on a topic page, for the secondary actions: Consume, CLI commands, Producers, Consumer groups, Clone topic, Recreate topic.
+- **Extra actions menu** — `.` opens the actions for whatever is under the cursor: on a topic, Consume, CLI commands, Producers, Consumer groups, Clone topic, Recreate topic; on a connector, pause/resume/restart; on a running connector's page, its task actions.
 - **Consumer** — kcat-style parameters: offsets, timestamps, partitions, avro/pack deserialization, output format, filter. Reading never commits: karat consumes under its own ephemeral group id, so browsing a topic cannot move anyone's offsets. `c` on the Topics list starts consuming right away with whatever you used last on that topic, `F1` shows the flag reference, and `Ctrl+O` opens the parameters in your editor with that reference inlined as comments.
 - **Avro decoding** — `-d key=avro -d value=avro -r <sr-name>`. `-d` chooses what gets decoded, `-r` names the schema registry to decode it against; `-r` on its own decodes nothing. `-d avro` is the shorthand for both, so a topic with a string key wants `-d value=avro` alone. Schemas are resolved by the id carried in each payload, so a topic whose schema changed mid-stream still reads. Payloads without the Confluent magic byte fall back to raw output instead of failing.
 - **Defaults** — a topic you have never consumed starts with `-o 100 -d key=avro -d value=avro -r <sr-name> -f '{…}'`, or the same without the `-d`/`-r` when no Schema Registry is selected: the last 100 records per partition, key and value decoded when there is something to decode them with, rendered as `{"Key":…,"Value":…,"Timestamp":…,"Partition":…,"Offset":…,"Headers":…,"Size":…}` — one JSON object per line. Key and value are spelled out rather than written as the equivalent bare `-d avro`, so a string key is one deleted flag away.
 - **Parameter history** — every parameter string you actually run is kept per cluster and topic in `~/.config/karat/history.yaml` and survives restarts. `Ctrl+R` lists what you ran on this topic, newest first, and `Enter` fills it back in. Each topic keeps its own 30 entries, so a topic you consume all day does not evict what you ran on another one last week.
 - **Consumer groups** — lag, partition assignments, offset resets, copying offsets to a new group.
-- **Offsets as a document** — `o` opens the group's offsets as YAML with one value per topic, `O` with one value per partition. A value is an absolute offset, `earliest`, `latest`, `@<timestamp>` or `none`. `all:` sets every topic at once, and naming a topic the group has never consumed seeds offsets for it.
+- **Offsets as a document** — `e` opens the group's offsets as YAML with one value per topic, `E` with one value per partition. A value is an absolute offset, `earliest`, `latest`, `@<timestamp>` or `none`. `all:` sets every topic at once, and naming a topic the group has never consumed seeds offsets for it.
 - **One offset-reset pipeline** — whichever document you opened, both go the same way: resolve, range-check, confirm per partition, commit. Offsets outside the log are refused rather than sent, because the broker accepts them and the consumer then silently overrides them. Seeding only writes a starting position — nothing subscribes to the topic, but a consumer that joins later resumes from it instead of falling back to `auto.offset.reset`.
 - **Transactions** — cluster-wide, with transactional ID, producer ID, state, timeout and partitions.
 - **ACLs** — principal, resource, pattern type, operation, permission.
@@ -61,7 +63,7 @@ schema:
 - **Kafka Connect** — connectors and their status, pause/resume/restart/stop, and source connector offsets.
 - **Nodes** — broker information and configuration.
 - **CLI templates** — run kcat, kafka-console-consumer or a script of your own with the cluster and topic filled in.
-- **Page history** — `h` and `l` move back and forward through the pages you have opened, `Ctrl+P` lists them. A confirmation page stays out of that list: there is no way back to one, so the keys that would leave it are refused until you apply or abandon it.
+- **Page history** — `b` and `f` move back and forward through the pages you have opened, `Ctrl+P` lists them. A confirmation page stays out of that list: there is no way back to one, so the keys that would leave it are refused until you apply or abandon it.
 - **Selection that survives a refresh** — sorting, filtering or a `Ctrl+U` rebuild puts the cursor back on the row it was on, by name.
 - **Search** — `/` fuzzy-matches across topics, consumer groups, subjects, connectors, transactions and ACLs. `Enter` keeps the filter and hands the keyboard back to the list; `Esc` drops it. A filter you keep survives navigating away and back, and the page title carries it.
 - **Sorting** — any column, ascending or descending.
@@ -69,6 +71,28 @@ schema:
 - **Caching** — 5 minutes per resource, and `Ctrl+U` forces a refresh of any view.
 - **Update notifications** — Karat checks GitHub for a newer release on startup and mentions it in the status bar.
 
+
+### Key conventions
+
+Keys mean the same thing wherever they appear:
+
+| Key | Means |
+|-----|-------|
+| `Enter` / `d` | Open what is under the cursor |
+| `.` | Actions for what is under the cursor |
+| `e` | Edit it — opens a document in your editor |
+| `y` | Copy it to the clipboard |
+| `n` | Create a new one |
+| `Ctrl+D` | Delete it **in Kafka** — never just closes a view |
+| `x` | Close the page |
+| `Ctrl+U` | Refresh |
+| `/` | Filter the list, `Esc` clears the filter |
+| `:` | Resource menu |
+| `Ctrl+P` | Opened pages |
+| `b` / `f` | Previous / next opened page |
+| `h` / `l` | Scroll a description or a wide table sideways |
+| `a` | Auto-update mode, on pages that support it |
+| `?` | This list, for the page you are on |
 
 ## Available Resources
 
@@ -81,11 +105,11 @@ Press `:` to open the resource menu. Schema Registry and Connect entries appear 
 | **Connect** | Kafka Connect instances | Select |
 | **Nodes** | Kafka brokers | List (the controller marked in the `Role` column), describe |
 | **Topics** | Kafka topics | List, describe (incl. on-disk size), create, edit configs and clone as a document in your editor, reset configs to cluster default, increase partitions, delete, recreate, search, sort, hide internal topics, view producers, consume messages, find consumer groups by topic, CLI templates, extra actions menu |
-| **Consumer groups** | Consumer groups | List, describe, view lag, reset offsets as a document in your editor — per topic (`o`) or per partition (`O`), seed offsets for a new topic, copy offsets to a new group, delete (Empty state only), find by topic, search, sort |
+| **Consumer groups** | Consumer groups | List, describe, view lag, reset offsets as a document in your editor — per topic (`e`) or per partition (`E`), seed offsets for a new topic, copy offsets to a new group, delete (Empty state only), find by topic, search, sort |
 | **Transactions** | Cluster-wide Kafka transactions | List, describe, search, sort |
 | **ACLs** | Cluster access control lists | List, search, sort |
 | **Subjects** | Schema Registry subjects | List, view versions, inspect schemas, find by schema id, clone, delete subject or version, search |
-| **Connectors** | Kafka Connect connectors | List, describe, pause/resume/restart/stop, delete, manage source connector offsets, search, sort |
+| **Connectors** | Kafka Connect connectors | List, describe, pause/resume/restart/stop, restart an individual task, delete, manage source connector offsets, search, sort |
 
 
 ## Installation
@@ -168,6 +192,13 @@ karat:
   # Editor used by every editor-backed view (optional, default: vim)
   # Split on whitespace, so flags are allowed: "code --wait"
   editor: "vim"
+
+  # What Karat may do without asking (optional, default: confirm)
+  #   read-only — every modification is refused
+  #   confirm   — deletions and recreation ask first
+  #   yolo      — no question asked; DANGEROUS on a production cluster, where a
+  #               mistyped key deletes a topic, group or connector with no undo
+  mode: confirm
 
   # Optional features (optional)
   features:
@@ -314,6 +345,17 @@ karat:
 | `confirm` | allowed | asks first — the default |
 | `yolo` | allowed | runs with no question |
 
+> [!WARNING]
+> **`yolo` is not safe on a production cluster.** It is the mode with no second chance: deleting a
+> topic, deleting a consumer group, deleting a connector, recreating a topic or resetting offsets
+> goes straight to the broker the moment the key is pressed — no question, no confirmation page, no
+> undo. A mistyped key or a cursor on the wrong row is enough, and Kafka has nothing to roll back to.
+>
+> Use it on a throwaway cluster you can rebuild. Point Karat at anything you care about and leave it
+> on `confirm` — or `read-only` if you are only there to look. The mode is per Karat instance, not
+> per cluster, so `<Tab>` back to `confirm` before you switch to a cluster that matters. The red
+> `[yolo]` badge on the content border is the only warning you get.
+
 - The mode is shown on the content border of every page, beside the page title, as `[yolo]`, `[confirm]` or `[read-only]`, in red when it is `yolo`. That colour is not configurable, and the badge stays put when a modal opens over the page
 - `<Tab>` on the Clusters page cycles it and saves the choice to `config.yaml`. Nothing is asked: the badge reports where you have landed. The mode Karat runs on is the one it holds in memory — `config.yaml` only carries it between sessions — and every operation reads it at the moment it runs, so a confirmation page is applied under the mode it was reviewed under: while one stands, the switch is refused along with the keys that would leave the page
 - The default is `confirm`, and it comes from karat's built-in `default_config.yaml` — a config that says nothing about the mode gets it from the merge, the same way it gets `api.timeout`. An unrecognised value falls back to it with a warning in the log
@@ -322,7 +364,7 @@ karat:
 
 **Confirmations:**
 - In `confirm` mode, deletions and topic recreation ask in the status line — `Y` goes ahead, `N` or `Esc` abandons. Every other key is ignored while the question stands
-- Editing a topic, offsets or a connector config still opens a confirmation page showing the diff, in every mode but `read-only`. That page is not part of the page history — `Ctrl+P`, `:`, `h` and `l` do nothing while it stands, so it cannot be left behind by accident
+- Editing a topic, offsets or a connector config still opens a confirmation page showing the diff, in every mode but `read-only`. That page is not part of the page history — `Ctrl+P`, `:`, `b` and `f` do nothing while it stands, so it cannot be left behind by accident
 
 **Transactions, ACLs, Topic Producers, and topic size:**
 - These features connect to the cluster via [franz-go](https://github.com/twmb/franz-go), built from the same `properties` as the cluster's main connection
@@ -354,7 +396,7 @@ Karat suspends the TUI and hands the terminal to your editor for these views:
 |-------|-----|----------|
 | Topics page | `n` / `e` | Topic definition — name, replication factor, partitions, configs |
 | Topics page | `.` → "Clone topic" | The source topic's definition; change `name` to create the clone |
-| Consumer Group | `o` / `O` | Committed offsets, one line per topic / per partition |
+| Consumer Group | `e` / `E` | Committed offsets, one line per topic / per partition |
 | Connector | `e` / `n` | Connector config JSON |
 | Consume parameters | `Ctrl+O` | Consume parameters |
 

@@ -107,7 +107,8 @@ func (app *App) Transactions() {
 					Publish(TransactionsChannel, GetTransactionsEventType, Payload{nil, true})
 				}
 
-				if IsKey(event, 'd') {
+				// <Enter> opens the row under the cursor, the same as <d>.
+				if IsKey(event, 'd') || event.Key() == tcell.KeyEnter {
 					txnID, ok := selectedName(table, afterHeaderRow)
 					if !ok {
 						return nil
@@ -200,7 +201,7 @@ func (app *App) Transaction(txnID string) {
 							Payload{txnID, true},
 						)
 					}
-					if IsKey(event, 'g') {
+					if IsKey(event, 'a') {
 						app.EnterAutoUpdateMode(pageKey, func() {
 							Publish(
 								TransactionsChannel,

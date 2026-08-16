@@ -129,7 +129,8 @@ func (app *App) Subjects() {
 							)
 						}
 
-						if event.Key() == tcell.KeyEnter {
+						// <Enter> opens the row under the cursor, the same as <d>.
+						if event.Key() == tcell.KeyEnter || IsKey(event, 'd') {
 							subject, ok := selectedName(table, afterHeaderRow)
 							if !ok {
 								return nil
@@ -223,7 +224,8 @@ func (app *App) Versions(subject string) {
 							)
 						}
 
-						if IsKey(event, 'd') {
+						// <Enter> opens the row under the cursor, the same as <d>.
+						if IsKey(event, 'd') || event.Key() == tcell.KeyEnter {
 							version, ok := selectedName(table, afterHeaderRow)
 							if !ok {
 								return nil

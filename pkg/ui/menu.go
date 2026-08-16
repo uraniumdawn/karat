@@ -36,15 +36,11 @@ var keys = map[string]Pair{
 		Value: "Move",
 	},
 	"forward": {
-		Key:   "<l>",
+		Key:   "<f>",
 		Value: "Forward",
 	},
-	"backward": {
-		Key:   "<h>",
-		Value: "Backward",
-	},
 	"b/f": {
-		Key:   "<h/l>",
+		Key:   "<b/f>",
 		Value: "Backward/Forward",
 	},
 	"select": {
@@ -72,15 +68,25 @@ var keys = map[string]Pair{
 		Value: "Search",
 	},
 	"dsc": {
+		Key:   "<Enter,d>",
+		Value: "Details",
+	},
+	// Clusters is the one list where <Enter> is not "open this": it selects the cluster
+	// Karat works against, so only <d> describes it.
+	"dsc_key": {
 		Key:   "<d>",
 		Value: "Details",
+	},
+	"versions": {
+		Key:   "<Enter,d>",
+		Value: "Versions",
 	},
 	"upd": {
 		Key:   "<C-u>",
 		Value: "Update",
 	},
 	"auto_upd": {
-		Key:   "<g>",
+		Key:   "<a>",
 		Value: "Auto-update mode",
 	},
 	"extra_actions": {
@@ -94,14 +100,6 @@ var keys = map[string]Pair{
 	"auto_upd_esc": {
 		Key:   "<Esc>",
 		Value: "Exit mode",
-	},
-	"term": {
-		Key:   "<e>",
-		Value: "Terminating",
-	},
-	"default": {
-		Key:   "<c>",
-		Value: "Default",
 	},
 	"create": {
 		Key:   "<n>",
@@ -132,7 +130,7 @@ var keys = map[string]Pair{
 		Value: "Delete Offsets",
 	},
 	"copy_offsets": {
-		Key:   "<c>",
+		Key:   "<y>",
 		Value: "Copy Offsets",
 	},
 	"edit_topic": {
@@ -144,7 +142,7 @@ var keys = map[string]Pair{
 		Value: "Submit",
 	},
 	"reset_offset": {
-		Key:   "<o/O>",
+		Key:   "<e/E>",
 		Value: "Reset Offsets by topic/partition",
 	},
 	"close": {
@@ -168,11 +166,11 @@ var keys = map[string]Pair{
 		Value: "Config",
 	},
 	"actions": {
-		Key:   "<a>",
+		Key:   "<.>",
 		Value: "Actions",
 	},
 	"task_actions": {
-		Key:   "<a>",
+		Key:   "<.>",
 		Value: "Task Actions",
 	},
 	"offsets": {
@@ -182,10 +180,6 @@ var keys = map[string]Pair{
 	"cancel": {
 		Key:   "<Esc>",
 		Value: "Cancel",
-	},
-	"cli_commands": {
-		Key:   "<t>",
-		Value: "CLI commands",
 	},
 	"consume_help": {
 		Key:   "<F1>",
@@ -208,11 +202,11 @@ var keys = map[string]Pair{
 		Value: "Use params",
 	},
 	"execute_cli": {
-		Key:   "<e>",
+		Key:   "<Enter>",
 		Value: "Execute CLI command (Beta)",
 	},
 	"copy_cli": {
-		Key:   "<c>",
+		Key:   "<y>",
 		Value: "Copy CLI command",
 	},
 	"terminate_cli": {
@@ -243,22 +237,6 @@ var keys = map[string]Pair{
 		Key:   "<2>",
 		Value: "JSON format",
 	},
-	"delete_cli": {
-		Key:   "<C-d>",
-		Value: "Remove page",
-	},
-	"enter": {
-		Key:   "<Enter>",
-		Value: "Confirm",
-	},
-	"enter_value": {
-		Key:   "<Enter>",
-		Value: "Enter Value",
-	},
-	"esc": {
-		Key:   "<Esc>",
-		Value: "Back",
-	},
 	"switch_act": {
 		Key:   "<Tab>",
 		Value: "Switch action",
@@ -267,17 +245,9 @@ var keys = map[string]Pair{
 		Key:   "<Esc>",
 		Value: "Confirm and back",
 	},
-	"esc_confirm_opened": {
-		Key:   "<Esc, Enter>",
-		Value: "Confirm and back",
-	},
 	"hlscroll": {
-		Key:   "<H,L>",
+		Key:   "<h,l>",
 		Value: "Scroll Left/Right",
-	},
-	"q": {
-		Key:   "<q>",
-		Value: "",
 	},
 	"sort_2": {
 		Key:   "<1/2>",
@@ -287,13 +257,21 @@ var keys = map[string]Pair{
 		Key:   "<1/2/3>",
 		Value: "Sort by column",
 	},
-	"find": {
-		Key:   "<f>",
-		Value: "Find By",
-	},
 	"toggle_mode": {
 		Key:   "<Tab>",
 		Value: "Cycle Mode",
+	},
+	"clear_filter": {
+		Key:   "<Esc>",
+		Value: "Clear filter",
+	},
+	"help": {
+		Key:   "<?>",
+		Value: "Keys",
+	},
+	"close_help": {
+		Key:   "<Esc>/?",
+		Value: "Close",
 	},
 }
 
@@ -345,6 +323,7 @@ const (
 	ConsumeStatsPageMenu                = "ConsumeStatsPageMenu"
 	ClusterConfigPageMenu               = "ClusterConfigPageMenu"
 	AutoUpdateModePageMenu              = "AutoUpdateModePageMenu"
+	HelpPageMenu                        = "HelpPageMenu"
 )
 
 // NewMenu builds the keybinding bar, pre-rendering the keybinding rows for every
@@ -380,9 +359,10 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 			},
 			OpenedPagesMenu: {
 				"sel",
+				"select",
 				"search",
 				"remove_page",
-				"esc_confirm_opened",
+				"close",
 			},
 			CliTemplatesPageMenu: {
 				"sel",
@@ -395,7 +375,7 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"select",
 				"toggle_mode",
 				"res",
-				"dsc",
+				"dsc_key",
 				"config_help",
 				"opened",
 				"forward",
@@ -456,7 +436,7 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 			ConsumeOutputPageMenu: {
 				"stop_consume",
 				"consume_stats",
-				"delete_cli",
+				"remove_page",
 				"b/f",
 			},
 			ConsumeStatsPageMenu: {
@@ -469,9 +449,13 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"auto_upd_tab",
 				"auto_upd_esc",
 			},
+			HelpPageMenu: {
+				"close_help",
+			},
 			CliExecutePageMenu: {
 				"terminate_cli",
 				"kill_cli",
+				"remove_page",
 				"b/f",
 			},
 			ConsumerGroupsPageMenu: {
@@ -545,7 +529,7 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 			},
 			SubjectsPageMenu: {
 				"sel",
-				"select",
+				"versions",
 				"res",
 				"search",
 				"opened",
