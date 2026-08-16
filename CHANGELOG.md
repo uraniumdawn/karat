@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.3.1] - 2026-08-16
+
+## Features
+
+* **A key reference on `?`**: the bindings that work everywhere, followed by the ones the page in front adds. Both sections are read from the same tables the bottom bar renders, so a binding cannot be documented in one and missing from the other. `Esc` or `?` puts it away, and it opens over anything — including a confirmation page, which it only reads.
+
+## Enhancements
+
+A pass over every keybinding in the application, so that a key means one thing wherever it appears.
+
+* **`Ctrl+D` deletes in Kafka and nothing else.** It deleted a topic, a consumer group, a connector and connector offsets — and also closed the consume-output and CLI-execute pages, which the bar itself spelled out as "Remove page". Closing a page is `x` now, the key the opened-pages modal already used for it.
+* **`Enter` runs a CLI template** instead of `e`. `e` means "edit" on every other page, which is the wrong promise for the key that runs a shell command.
+* **`.` opens the actions for whatever is under the cursor, on connectors too.** Connector actions and task actions were on `a`, the only list pages that did not use `.`.
+* **Resetting consumer group offsets is `e`/`E`**, by topic and by partition, instead of `o`/`O`. Both open a document in your editor, which is what `e` means everywhere else; `o` is left to mean "show me the offsets", as it does on a connector.
+* **`Enter` opens the row under the cursor on every list**, alongside `d`: topics, consumer groups, connectors, nodes and transactions. Subjects and versions, which only answered to `Enter`, now take `d` as well. The Clusters page is the exception and says so in the bar — there `Enter` selects the cluster karat works against, and only `d` describes it.
+* **`y` copies**, in the CLI templates modal and the connector offsets view, leaving `c` to mean "consume" wherever it appears.
+* **`hjkl` moves within a page and nothing else.** Page history moved from `h`/`l` to `b`/`f` — the first letters of what the bar has always called them — and horizontal scrolling came down from `H`/`L` to `h`/`l`. Those are the keys tview scrolls a description or a table with in the first place; karat was intercepting them, which is why scrolling had to be invented on the shifted pair. Descriptions keep their five-column step rather than tview's one.
+* **Auto-update mode is `a`** instead of `g`, which a description page needs for something else — see below.
+
+## Fixes
+
+* **A connector task could not be restarted without guessing.** The Action column on the task actions modal started blank, so `Ctrl+Enter` refused the row and asked for a `Tab` — to set the only action the Connect REST API offers for a task. Worse, a second `Tab` cleared the column again, leaving a row that could not be submitted at all. The action is filled in from the start and `Tab` now only cycles.
+* **There was no way to back out of the opened-pages modal.** `Esc` and `Enter` both switched to the highlighted page, and moving the cursor already switched the page underneath, so opening the list to look at it left you somewhere else. `Enter` takes the highlighted page; `Esc` returns to the page the modal was opened from.
+* **A long description could be scrolled to the bottom but not back to the top.** `G` jumps to the end, `g` to the beginning — except `g` was bound to auto-update mode, which swallowed it. Auto-update mode is `a` now and `g` does what it does everywhere else.
+* **A wide list could not be scrolled sideways.** The Size, Lag and connector columns run past the edge of a narrow terminal, and the keys that would have moved the view — `h` and `l` — were taken by the page history before the table saw them. They reach the table now.
+
 ## [0.3.0] - 2026-08-15
 
 ## Features

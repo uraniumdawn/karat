@@ -172,7 +172,8 @@ func (app *App) setupGroupsTable(
 			onRefresh()
 		}
 
-		if IsKey(event, 'd') {
+		// <Enter> opens the row under the cursor, the same as <d>.
+		if IsKey(event, 'd') || event.Key() == tcell.KeyEnter {
 			groupName, ok := selectedName(table, afterHeaderRow)
 			if !ok {
 				return nil
@@ -465,7 +466,7 @@ func (app *App) ConsumerGroup(name string) {
 									Payload{name, true},
 								)
 							}
-							if IsKey(event, 'g') {
+							if IsKey(event, 'a') {
 								app.EnterAutoUpdateMode(pageKey, func() {
 									Publish(
 										CgroupsChannel,
@@ -475,14 +476,18 @@ func (app *App) ConsumerGroup(name string) {
 								})
 								return nil
 							}
-							if IsKey(event, 'o') {
+							// Resetting offsets opens the group's offsets as an editable
+							// document,
+							// which is what <e> means everywhere else. <o> is left to mean
+							// "show me the offsets", as it does on a connector.
+							if IsKey(event, 'e') {
 								if !app.offsetsEditable(description) {
 									return event
 								}
 								app.resetOffsets(name, description, offsetsByTopic)
 								return nil
 							}
-							if IsKey(event, 'O') {
+							if IsKey(event, 'E') {
 								if !app.offsetsEditable(description) {
 									return event
 								}

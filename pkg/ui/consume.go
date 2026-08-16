@@ -110,7 +110,9 @@ func (app *App) StartConsuming(
 			app.ShowModalPage(ConsumeStats)
 			return nil
 		}
-		if event.Key() == tcell.KeyCtrlD {
+		// <x> closes the page, the same key the opened-pages modal uses. <C-d> is reserved for
+		// deleting things in Kafka and must not also mean "close this".
+		if IsKey(event, 'x') {
 			if atomic.LoadInt32(&isActive) == 1 {
 				SendStatus("consumer is still active — press t to stop first", 2*time.Second, false)
 				return nil

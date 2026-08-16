@@ -69,6 +69,7 @@ const (
 	ConsumeHistory         = "Consume History"
 	ConsumeStats           = "Consume Stats"
 	ClusterConfig          = "Cluster Config"
+	Help                   = "Help"
 )
 
 type App struct {
@@ -482,20 +483,22 @@ func (app *App) NewDescription(title string) *tview.TextView {
 	return desc
 }
 
-// WithHScroll wraps an input capture handler to add H/L horizontal scrolling to a TextView.
+// WithHScroll wraps an input capture handler to add h/l horizontal scrolling to a TextView.
+// tview scrolls a column at a time on those keys; a description is wide enough that five is
+// the more useful step, which is the whole reason this wrapper still exists.
 func (app *App) WithHScroll(
 	desc *tview.TextView,
 	handler func(*tcell.EventKey) *tcell.EventKey,
 ) func(*tcell.EventKey) *tcell.EventKey {
 	return func(event *tcell.EventKey) *tcell.EventKey {
 		row, col := desc.GetScrollOffset()
-		if IsKey(event, 'H') {
+		if IsKey(event, 'h') {
 			if col > 0 {
 				desc.ScrollTo(row, col-5)
 			}
 			return nil
 		}
-		if IsKey(event, 'L') {
+		if IsKey(event, 'l') {
 			desc.ScrollTo(row, col+5)
 			return nil
 		}

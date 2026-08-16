@@ -59,13 +59,25 @@ func (app *App) OpenPagesKeyHandler(filteredTable *tview.Table) {
 	})
 
 	filteredTable.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEsc || event.Key() == tcell.KeyEnter {
+		// <Enter> takes the highlighted page, <Esc> abandons the list — the same split as
+		// everywhere else. Moving the cursor already switched the page underneath, so
+		// abandoning means switching back to where the modal was opened from.
+		if event.Key() == tcell.KeyEnter {
 			row, _ := filteredTable.GetSelection()
 			if row >= 0 && row < filteredTable.GetRowCount() {
 				cell := filteredTable.GetCell(row, 1)
 				if cell != nil {
 					app.SwitchToPage(cell.Text)
 				}
+			}
+			searchInput.SetText("")
+			app.HideModalPage(OpenedPages)
+			return nil
+		}
+
+		if event.Key() == tcell.KeyEsc {
+			if registry.openedPagesReturn != "" {
+				app.SwitchToPage(registry.openedPagesReturn)
 			}
 			searchInput.SetText("")
 			app.HideModalPage(OpenedPages)
@@ -159,6 +171,16 @@ func (app *App) MainOperationKeyHandler() {
 			}
 		}
 
+		// The key reference is available from anywhere a key means a command rather than a
+		// character, including on top of a confirmation: it only reads, and Esc puts it away.
+		if IsKey(event, '?') && !app.IsSearchInFocus() && !app.IsInputFieldInFocus() {
+			currentPage, _ := app.Layout.PagesRegistry.UI.Pages.GetFrontPage()
+			if currentPage != Help {
+				app.ShowHelp()
+			}
+			return nil
+		}
+
 		if IsKey(event, ':') {
 			if !app.IsSearchInFocus() && !app.IsInputFieldInFocus() {
 				currentPage, _ := app.Layout.PagesRegistry.UI.Pages.GetFrontPage()
@@ -197,7 +219,12 @@ func (app *App) MainOperationKeyHandler() {
 			app.ShowModalPage(OpenedPages)
 		}
 
-		if event.Key() == tcell.KeyRune && event.Rune() == 'h' && !app.IsSearchInFocus() {
+		// Backward and forward through the opened pages. They used to be <h>/<l>, which meant
+		// intercepting the keys tview itself scrolls a table or a description sideways with —
+		// the reason horizontal scrolling had to be invented on <H>/<L>. <hjkl> now moves
+		// within a page and nothing else, and the page history took the first letters of what
+		// the menu bar has always called it.
+		if IsKey(event, 'b') && !app.IsSearchInFocus() && !app.IsInputFieldInFocus() {
 			currentPage, _ := app.Layout.PagesRegistry.UI.Pages.GetFrontPage()
 			if app.Layout.PagesRegistry.IsPersistentPage(currentPage) {
 				app.Backward()
@@ -205,7 +232,7 @@ func (app *App) MainOperationKeyHandler() {
 			}
 		}
 
-		if event.Key() == tcell.KeyRune && event.Rune() == 'l' && !app.IsSearchInFocus() {
+		if IsKey(event, 'f') && !app.IsSearchInFocus() && !app.IsInputFieldInFocus() {
 			currentPage, _ := app.Layout.PagesRegistry.UI.Pages.GetFrontPage()
 			if app.Layout.PagesRegistry.IsPersistentPage(currentPage) {
 				app.Forward()

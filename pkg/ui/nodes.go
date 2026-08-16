@@ -96,7 +96,8 @@ func (app *App) Nodes() {
 							Publish(NodesChannel, GetNodesEventType, Payload{nil, true})
 						}
 
-						if IsKey(event, 'd') {
+						// <Enter> opens the row under the cursor, the same as <d>.
+						if IsKey(event, 'd') || event.Key() == tcell.KeyEnter {
 							nodeID, ok := selectedName(table, afterHeaderRow)
 							if !ok {
 								return nil

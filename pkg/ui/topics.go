@@ -182,7 +182,8 @@ func (app *App) Topics(force bool) {
 						if event.Key() == tcell.KeyCtrlU {
 							Publish(TopicsChannel, GetTopicsEventType, Payload{nil, true})
 						}
-						if IsKey(event, 'd') {
+						// <Enter> opens the row under the cursor, the same as <d>.
+						if IsKey(event, 'd') || event.Key() == tcell.KeyEnter {
 							topicName, ok := selectedName(table, afterHeaderRow)
 							if !ok {
 								return nil
@@ -502,7 +503,7 @@ func (app *App) Topic(name string) {
 									Payload{name, true},
 								)
 							}
-							if IsKey(event, 'g') {
+							if IsKey(event, 'a') {
 								app.EnterAutoUpdateMode(pageKey, func() {
 									Publish(
 										TopicsChannel,
@@ -582,7 +583,7 @@ func (app *App) TopicProducers(name string) {
 							Payload{name, true},
 						)
 					}
-					if IsKey(event, 'g') {
+					if IsKey(event, 'a') {
 						app.EnterAutoUpdateMode(pageKey, func() {
 							Publish(
 								TopicsChannel,

@@ -26,6 +26,10 @@ type PagesRegistry struct {
 	// transientReturn maps a transient page to the page that was in front when it opened.
 	// A transient page is not in OpenedPages, so there is nothing else to return to.
 	transientReturn map[string]string
+	// openedPagesReturn is the page that was in front when the opened-pages modal was opened.
+	// Moving the cursor in the modal switches the page underneath, so abandoning it with Esc
+	// has to put that page back.
+	openedPagesReturn string
 }
 
 // UI contains the main UI components including pages and opened pages table.
@@ -399,6 +403,7 @@ func (app *App) ShowModalPage(pageName string) {
 
 	// The opened-pages list starts on the page the user came from, so closing it with Esc
 	// leaves them where they were.
+	registry.openedPagesReturn = currentPage
 	registry.RebuildFilteredPages("")
 	for i := range registry.UI.FilteredPages.GetRowCount() {
 		cell := registry.UI.FilteredPages.GetCell(i, 1)

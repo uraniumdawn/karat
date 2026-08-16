@@ -61,7 +61,8 @@ func (app *App) CliTemplates(topicName string) {
 			return nil
 		}
 
-		if IsKey(event, 'c') {
+		// <y> yanks, leaving <c> to mean "consume" wherever it appears.
+		if IsKey(event, 'y') {
 			row, _ := table.GetSelection()
 			if row >= 0 && row < len(app.Config.Karat.CliTemplates) {
 				templateCmd := app.Config.Karat.CliTemplates[row]
@@ -77,13 +78,16 @@ func (app *App) CliTemplates(topicName string) {
 			return nil
 		}
 
-		if IsKey(event, 'e') {
+		// <Enter> runs the selected entry, as it does in every other list of actions. <e> means
+		// "edit" everywhere else, which is the wrong promise for a key that runs a shell command.
+		if event.Key() == tcell.KeyEnter {
 			row, _ := table.GetSelection()
 			if row >= 0 && row < len(app.Config.Karat.CliTemplates) {
 				templateCmd := app.Config.Karat.CliTemplates[row]
 				app.ExecuteCliCommand(topicName, templateCmd)
 				app.HideModalPage(CliTemplates)
 			}
+			return nil
 		}
 
 		return event
@@ -204,7 +208,9 @@ func (app *App) ExecuteCliCommand(topicName, commandTemplate string) {
 			SendStatusInfinite("killing process")
 			return nil
 		}
-		if event.Key() == tcell.KeyCtrlD {
+		// <x> closes the page, the same key the opened-pages modal uses. <C-d> is reserved for
+		// deleting things in Kafka and must not also mean "close this".
+		if IsKey(event, 'x') {
 			if atomic.LoadInt32(&isProcessActive) == 1 {
 				SendStatus("process in not finished yet", 2*time.Second, false)
 				return nil

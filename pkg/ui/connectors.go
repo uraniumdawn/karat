@@ -137,7 +137,8 @@ func (app *App) Connectors() {
 								Payload{nil, true},
 							)
 						}
-						if IsKey(event, 'd') {
+						// <Enter> opens the row under the cursor, the same as <d>.
+						if IsKey(event, 'd') || event.Key() == tcell.KeyEnter {
 							connectorName, ok := selectedName(table, afterHeaderRow)
 							if !ok {
 								return nil
@@ -149,7 +150,8 @@ func (app *App) Connectors() {
 							)
 						}
 
-						if IsKey(event, 'a') {
+						// <.> opens the actions menu, as it does on every other list page.
+						if IsKey(event, '.') {
 							if !app.Allowed() {
 								return event
 							}
@@ -406,7 +408,7 @@ func (app *App) ConnectorDetail(name string) {
 							if IsKey(event, 'e') {
 								app.EditConnectorConfig(name)
 							}
-							if isRunning && !isReadOnly && IsKey(event, 'a') {
+							if isRunning && !isReadOnly && IsKey(event, '.') {
 								app.TaskActionsModal(detail)
 								app.ShowModalPage(TaskActions)
 							}
@@ -918,7 +920,9 @@ func (app *App) TaskActionsModal(detail *connect.ConnectorDetail) {
 		taskTable.SetCell(i+1, 0, tview.NewTableCell(strconv.Itoa(task.ID)))
 		taskTable.SetCell(i+1, 1, tview.NewTableCell(task.State).SetTextColor(stateColor))
 		taskTable.SetCell(i+1, 2, tview.NewTableCell(task.WorkerID))
-		taskTable.SetCell(i+1, 3, tview.NewTableCell(""))
+		// The action is filled in from the start: it applies to the row under the cursor,
+		// so leaving it blank asks for a keypress that has only one possible outcome.
+		taskTable.SetCell(i+1, 3, tview.NewTableCell(actions[0]).SetTextColor(actionColor))
 	}
 
 	modalHeight := len(tasks) + 3 // header + task rows + top/bottom borders
@@ -936,35 +940,22 @@ func (app *App) TaskActionsModal(detail *connect.ConnectorDetail) {
 		row, _ := taskTable.GetSelection()
 		switch {
 		case event.Key() == tcell.KeyTab:
+			// Tab cycles through the actions and never lands on "none": clearing the cell
+			// would only leave the row unable to be submitted.
 			if row > 0 && row <= len(tasks) {
 				cell := taskTable.GetCell(row, 3)
-				if cell.Text == "" {
-					cell.SetText(actions[0]).SetTextColor(actionColor)
-				} else {
-					idx := 0
-					for i, a := range actions {
-						if a == cell.Text {
-							idx = i
-							break
-						}
-					}
-					next := actions[(idx+1)%len(actions)]
-					if next == actions[0] && len(actions) == 1 {
-						cell.SetText("").SetTextColor(tcell.ColorDefault)
-					} else {
-						cell.SetText(next).SetTextColor(actionColor)
+				idx := 0
+				for i, a := range actions {
+					if a == cell.Text {
+						idx = i
+						break
 					}
 				}
+				cell.SetText(actions[(idx+1)%len(actions)]).SetTextColor(actionColor)
 			}
 		case IsCtrlEnter(event):
 			if row > 0 && row <= len(tasks) {
 				action := taskTable.GetCell(row, 3).Text
-				if action == "" {
-					SendStatusWithDefaultTTL(
-						"press Tab to set an action for the selected task",
-					)
-					return event
-				}
 				taskID := tasks[row-1].ID
 				app.ExecuteTaskAction(connectorName, taskID, action)
 				app.HideModalPage(TaskActions)
@@ -1060,7 +1051,8 @@ func (app *App) buildConnectorOffsetsModal(name, state string, offsets []connect
 				Publish(ConnectorsChannel, DeleteConnectorOffsetsEventType, Payload{name, false})
 				return nil
 			}
-			if IsKey(event, 'c') {
+			// <y> yanks, leaving <c> to mean "consume" wherever it appears.
+			if IsKey(event, 'y') {
 				if !app.Allowed() {
 					return event
 				}
