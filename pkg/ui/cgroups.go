@@ -35,24 +35,26 @@ const (
 )
 
 // CgroupsChannel is the channel for consumer group events.
-var CgroupsChannel = make(chan Event)
+var CgroupsChannel = NewEventChannel()
 
 // RunCgroupsEventHandler processes consumer group events from the channel.
-func (app *App) RunCgroupsEventHandler(ctx context.Context, in chan Event) {
+func (app *App) RunCgroupsEventHandler(ctx context.Context, in *EventChannel) {
+	in.Run(ctx)
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				log.Debug().Msg("shutting down cgroups event handler")
 				return
-			case event := <-in:
+			case event := <-in.C:
 				switch event.Type {
 				case GetCgroupsEventType:
 					pageName := util.BuildPageKey(app.Selected.Cluster.Name, ConsumerGroups)
 					force := event.Payload.Force
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.ConsumerGroups(force)
 					}
@@ -67,7 +69,7 @@ func (app *App) RunCgroupsEventHandler(ctx context.Context, in chan Event) {
 					)
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.ConsumerGroup(consumerGroup)
 					}
@@ -89,7 +91,7 @@ func (app *App) RunCgroupsEventHandler(ctx context.Context, in chan Event) {
 					)
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.ConsumerGroupsByTopic(topicName, force)
 					}
@@ -105,7 +107,7 @@ func (app *App) ConsumerGroups(force bool) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("getting consumer groups")
+	SendStatusProgress("getting consumer groups")
 	c.ConsumerGroups(resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -130,14 +132,14 @@ func (app *App) ConsumerGroups(force bool) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to list consumer groups")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to list consumer groups: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while listing consumer groups")
-				SendStatusWithDefaultTTL("[red]timeout while listing consumer groups")
+				SendStatusError("[red]timeout while listing consumer groups")
 				return
 			}
 		}
@@ -198,7 +200,7 @@ func (app *App) setupGroupsTable(
 			for _, g := range groups.Valid {
 				if g.GroupID == groupName {
 					if g.State != kafka.ConsumerGroupStateEmpty {
-						SendStatusWithDefaultTTL(fmt.Sprintf(
+						SendStatusError(fmt.Sprintf(
 							"[red]cannot delete: consumer group state is %s, must be Empty",
 							g.State,
 						))
@@ -338,7 +340,7 @@ func (app *App) ConsumerGroupsByTopic(topicName string, force bool) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("finding consumer groups by topic")
+	SendStatusProgress("finding consumer groups by topic")
 	c.ConsumerGroupsByTopic(topicName, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -373,14 +375,14 @@ func (app *App) ConsumerGroupsByTopic(topicName string, force bool) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to find consumer groups by topic")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to find consumer groups by topic: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while finding consumer groups by topic")
-				SendStatusWithDefaultTTL("[red]timeout while finding consumer groups by topic")
+				SendStatusError("[red]timeout while finding consumer groups by topic")
 				return
 			}
 		}
@@ -406,7 +408,7 @@ func (app *App) FindConsumerGroupsByTopicModal() {
 		if IsCtrlEnter(event) {
 			topicName := strings.TrimSpace(input.GetText())
 			if topicName == "" {
-				SendStatusWithDefaultTTL("[red]topic name cannot be empty")
+				SendStatusError("[red]topic name cannot be empty")
 				return nil
 			}
 			app.HideModalPage(FindBy)
@@ -439,7 +441,7 @@ func (app *App) ConsumerGroup(name string) {
 	pageKey := util.BuildPageKey(app.Selected.Cluster.Name, ConsumerGroup, name)
 	autoRefreshing := app.GetAutoUpdateLabel(pageKey) != ""
 	if !autoRefreshing {
-		SendStatusInfinite("getting consumer group description")
+		SendStatusProgress("getting consumer group description")
 	}
 	c.DescribeConsumerGroup(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
@@ -507,14 +509,14 @@ func (app *App) ConsumerGroup(name string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to describe consumer group")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to describe consumer group: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while describing consumer group")
-				SendStatusWithDefaultTTL("[red]timeout while describing consumer group")
+				SendStatusError("[red]timeout while describing consumer group")
 				return
 			}
 		}
@@ -531,7 +533,7 @@ func (app *App) offsetsEditable(description *client.DescribeConsumerGroupResult)
 
 	for _, d := range description.ConsumerGroupDescriptions {
 		if len(d.Members) > 0 {
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				"[red]cannot reset offsets: consumer group has active members",
 			)
 			return false
@@ -549,7 +551,7 @@ func (app *App) WithTopicPartitionCounts(fn func(counts map[string]int)) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("fetching cluster topics")
+	SendStatusProgress("fetching cluster topics")
 	c.TopicPartitionCounts(resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -564,12 +566,12 @@ func (app *App) WithTopicPartitionCounts(fn func(counts map[string]int)) {
 			})
 		case err := <-errorCh:
 			log.Error().Err(err).Msg("failed to fetch cluster topics")
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				fmt.Sprintf("[red]failed to fetch cluster topics: %s", err.Error()),
 			)
 		case <-ctx.Done():
 			log.Error().Msg("timeout while fetching cluster topics")
-			SendStatusWithDefaultTTL("[red]timeout while fetching cluster topics")
+			SendStatusError("[red]timeout while fetching cluster topics")
 		}
 	}()
 }
@@ -623,7 +625,7 @@ func (app *App) editConsumerGroupOffsets(
 	}
 	if err != nil {
 		log.Error().Err(err).Msg("failed to render consumer group offsets document")
-		SendStatusWithDefaultTTL("[red]failed to render offsets document")
+		SendStatusError("[red]failed to render offsets document")
 		return
 	}
 
@@ -634,11 +636,11 @@ func (app *App) editConsumerGroupOffsets(
 
 	targets, err := parseConsumerGroupOffsetsDocument(edited, group, committed, partitionCounts)
 	if err != nil {
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		SendStatusError(fmt.Sprintf("[red]%s", err.Error()))
 		return
 	}
 	if len(targets) == 0 {
-		SendStatusWithDefaultTTL("nothing to change")
+		SendStatusNote("nothing to change")
 		return
 	}
 
@@ -656,7 +658,7 @@ func (app *App) ResolveConsumerGroupOffsets(
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("resolving target offsets")
+	SendStatusProgress("resolving target offsets")
 	c.ResolveOffsetTargets(targets, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -670,12 +672,12 @@ func (app *App) ResolveConsumerGroupOffsets(
 			})
 		case err := <-errorCh:
 			log.Error().Err(err).Msg("failed to resolve target offsets")
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				fmt.Sprintf("[red]failed to resolve target offsets: %s", err.Error()),
 			)
 		case <-ctx.Done():
 			log.Error().Msg("timeout while resolving target offsets")
-			SendStatusWithDefaultTTL("[red]timeout while resolving target offsets")
+			SendStatusError("[red]timeout while resolving target offsets")
 		}
 	}()
 }
@@ -693,11 +695,11 @@ func (app *App) ConsumerGroupOffsetsConfirm(
 ) bool {
 	changes := offsetChanges(committed, targets, resolved)
 	if len(changes) == 0 {
-		SendStatusWithDefaultTTL("no changes detected")
+		SendStatusNote("no changes detected")
 		return false
 	}
 	if invalid := outOfRangeChanges(changes); len(invalid) > 0 {
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", outOfRangeMessage(invalid, resolved)))
+		SendStatusError(fmt.Sprintf("[red]%s", outOfRangeMessage(invalid, resolved)))
 		return false
 	}
 
@@ -748,7 +750,7 @@ func (app *App) SetConsumerGroupOffsetsResultHandler(group string, changes []off
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("committing consumer group offsets")
+	SendStatusProgress("committing consumer group offsets")
 	c.SetConsumerGroupOffsets(group, offsets, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -757,25 +759,21 @@ func (app *App) SetConsumerGroupOffsetsResultHandler(group string, changes []off
 
 		select {
 		case <-resultCh:
-			SendStatus(
-				fmt.Sprintf(
-					"offsets for '%s' committed (%d partition%s)",
-					group,
-					len(changes),
-					pluralSuffix(len(changes)),
-				),
-				2*time.Second,
-				false,
-			)
+			SendStatusDone(fmt.Sprintf(
+				"offsets for '%s' committed (%d partition%s)",
+				group,
+				len(changes),
+				pluralSuffix(len(changes)),
+			))
 			Publish(CgroupsChannel, GetCgroupEventType, Payload{group, true})
 		case err := <-errorCh:
 			log.Error().Err(err).Msg("failed to commit consumer group offsets")
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				fmt.Sprintf("[red]failed to commit offsets: %s", err.Error()),
 			)
 		case <-ctx.Done():
 			log.Error().Msg("timeout while committing consumer group offsets")
-			SendStatusWithDefaultTTL("[red]timeout while committing offsets")
+			SendStatusError("[red]timeout while committing offsets")
 		}
 	}()
 }
@@ -810,7 +808,7 @@ func (app *App) CopyConsumerGroupModal(groupName string) {
 	submit := func() {
 		targetGroup := strings.TrimSpace(input.GetText())
 		if targetGroup == "" {
-			SendStatusWithDefaultTTL("[red]group name cannot be empty")
+			SendStatusError("[red]group name cannot be empty")
 			return
 		}
 		app.HideModalPage(CopyConsumerGroup)
@@ -859,7 +857,7 @@ func (app *App) CopyConsumerGroupOffsetsBatchResultHandler(sourceGroup, targetGr
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite(fmt.Sprintf("copying offsets to '%s'", targetGroup))
+	SendStatusProgress(fmt.Sprintf("copying offsets to '%s'", targetGroup))
 	c.CopyConsumerGroupOffsets(sourceGroup, targetGroup, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -867,19 +865,19 @@ func (app *App) CopyConsumerGroupOffsetsBatchResultHandler(sourceGroup, targetGr
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(fmt.Sprintf("offsets copied to '%s'", targetGroup), 2*time.Second, false)
+				SendStatusDone(fmt.Sprintf("offsets copied to '%s'", targetGroup))
 				cancel()
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to copy consumer group offsets")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to copy offsets: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while copying consumer group offsets")
-				SendStatusWithDefaultTTL("[red]timeout while copying consumer group offsets")
+				SendStatusError("[red]timeout while copying consumer group offsets")
 				return
 			}
 		}
@@ -1087,7 +1085,7 @@ func (app *App) DeleteConsumerGroupResultHandler(name string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("deleting consumer group")
+	SendStatusProgress("deleting consumer group")
 	c.DeleteConsumerGroup(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -1095,11 +1093,7 @@ func (app *App) DeleteConsumerGroupResultHandler(name string) {
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(
-					fmt.Sprintf("consumer group '%s' has been deleted", name),
-					2*time.Second,
-					false,
-				)
+				SendStatusDone(fmt.Sprintf("consumer group '%s' has been deleted", name))
 				cluster := app.Selected.Cluster.Name
 				app.QueueUpdateDraw(func() { app.RemovePagesFor(cluster, name) })
 				Publish(CgroupsChannel, GetCgroupsEventType, Payload{nil, true})
@@ -1107,14 +1101,14 @@ func (app *App) DeleteConsumerGroupResultHandler(name string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to delete consumer group")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to delete consumer group: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while deleting consumer group")
-				SendStatusWithDefaultTTL("[red]timeout while deleting consumer group")
+				SendStatusError("[red]timeout while deleting consumer group")
 				return
 			}
 		}

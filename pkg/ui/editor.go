@@ -37,7 +37,7 @@ func (app *App) OpenInEditor(pattern string, content []byte) ([]byte, bool) {
 	tmpFile, err := os.CreateTemp("", pattern)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to create temp file")
-		SendStatusWithDefaultTTL("[red]failed to create temp file")
+		SendStatusError("[red]failed to create temp file")
 		return nil, false
 	}
 	tmpPath := tmpFile.Name()
@@ -46,12 +46,12 @@ func (app *App) OpenInEditor(pattern string, content []byte) ([]byte, bool) {
 	if _, err := tmpFile.Write(content); err != nil {
 		_ = tmpFile.Close()
 		log.Error().Err(err).Msg("failed to write temp file")
-		SendStatusWithDefaultTTL("[red]failed to write temp file")
+		SendStatusError("[red]failed to write temp file")
 		return nil, false
 	}
 	if err := tmpFile.Close(); err != nil {
 		log.Error().Err(err).Msg("failed to close temp file")
-		SendStatusWithDefaultTTL("[red]failed to close temp file")
+		SendStatusError("[red]failed to close temp file")
 		return nil, false
 	}
 
@@ -78,19 +78,19 @@ func (app *App) OpenInEditor(pattern string, content []byte) ([]byte, bool) {
 	var runErr error
 	if !app.Suspend(func() { runErr = cmd.Run() }) {
 		log.Error().Msg("failed to suspend the application for the editor")
-		SendStatusWithDefaultTTL("[red]cannot open the editor right now")
+		SendStatusError("[red]cannot open the editor right now")
 		return nil, false
 	}
 	if runErr != nil {
 		log.Error().Err(runErr).Str("editor", editor[0]).Msg("editor did not complete")
-		SendStatusWithDefaultTTL(editorErrorMessage(editor[0], runErr))
+		SendStatusNote(editorErrorMessage(editor[0], runErr))
 		return nil, false
 	}
 
 	edited, err := os.ReadFile(tmpPath)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to read edited file")
-		SendStatusWithDefaultTTL("[red]failed to read edited file")
+		SendStatusError("[red]failed to read edited file")
 		return nil, false
 	}
 
@@ -100,7 +100,7 @@ func (app *App) OpenInEditor(pattern string, content []byte) ([]byte, bool) {
 	if bytes.Equal(edited, content) {
 		if hint := missingWaitFlagHint(editor); hint != "" {
 			log.Warn().Strs("editor", editor).Msg("editor returned before the file was edited")
-			SendStatusWithDefaultTTL(hint)
+			SendStatusNote(hint)
 			return nil, false
 		}
 	}

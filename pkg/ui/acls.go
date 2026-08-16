@@ -23,24 +23,26 @@ import (
 const GetACLsEventType EventType = "acls:get"
 
 // ACLsChannel is the channel for ACL events.
-var ACLsChannel = make(chan Event)
+var ACLsChannel = NewEventChannel()
 
 // RunACLsEventHandler processes ACL events from the channel.
-func (app *App) RunACLsEventHandler(ctx context.Context, in chan Event) {
+func (app *App) RunACLsEventHandler(ctx context.Context, in *EventChannel) {
+	in.Run(ctx)
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				log.Debug().Msg("shutting down acls event handler")
 				return
-			case event := <-in:
+			case event := <-in.C:
 				switch event.Type {
 				case GetACLsEventType:
 					pageName := util.BuildPageKey(app.Selected.Cluster.Name, ACLs)
 					force := event.Payload.Force
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.ACLs()
 					}
@@ -54,11 +56,11 @@ func (app *App) RunACLsEventHandler(ctx context.Context, in chan Event) {
 func (app *App) ACLs() {
 	fc := app.GetCurrentFranzClient()
 	if fc == nil {
-		SendStatusWithDefaultTTL("[red]ACLs view requires franz-go connectivity for this cluster")
+		SendStatusError("[red]ACLs view requires franz-go connectivity for this cluster")
 		return
 	}
 
-	SendStatusInfinite("getting acls")
+	SendStatusProgress("getting acls")
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
 	go func() {
@@ -66,7 +68,7 @@ func (app *App) ACLs() {
 		acls, err := fc.ListACLs(ctx)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to list acls")
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				fmt.Sprintf("[red]failed to list acls: %s", err.Error()),
 			)
 			return

@@ -20,17 +20,19 @@ const (
 )
 
 // ConnectChannel is the channel for connect events.
-var ConnectChannel = make(chan Event)
+var ConnectChannel = NewEventChannel()
 
 // RunConnectEventHandler processes connect events from the channel.
-func (app *App) RunConnectEventHandler(ctx context.Context, in chan Event) {
+func (app *App) RunConnectEventHandler(ctx context.Context, in *EventChannel) {
+	in.Run(ctx)
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				log.Debug().Msg("shutting down connect event handler")
 				return
-			case event := <-in:
+			case event := <-in.C:
 				switch event.Type {
 				case GetConnectEventType:
 					app.QueueUpdateDraw(func() {

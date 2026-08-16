@@ -23,16 +23,18 @@ const (
 	GetClusterEventType  EventType = "cluster:get"
 )
 
-var ClustersChannel = make(chan Event)
+var ClustersChannel = NewEventChannel()
 
-func (app *App) RunClusterEventHandler(ctx context.Context, in chan Event) {
+func (app *App) RunClusterEventHandler(ctx context.Context, in *EventChannel) {
+	in.Run(ctx)
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				log.Debug().Msg("shutting down cluster event handler")
 				return
-			case event := <-in:
+			case event := <-in.C:
 				switch event.Type {
 				case GetClustersEventType:
 					app.QueueUpdateDraw(func() {
@@ -45,7 +47,7 @@ func (app *App) RunClusterEventHandler(ctx context.Context, in chan Event) {
 					force := event.Payload.Force
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.Cluster()
 					}
@@ -59,7 +61,7 @@ func (app *App) Cluster() {
 	c := app.KafkaClients[app.Selected.Cluster.Name]
 	rCh := make(chan *client.ClusterResult)
 	errorCh := make(chan error)
-	SendStatusInfinite("getting cluster description")
+	SendStatusProgress("getting cluster description")
 	c.DescribeCluster(rCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -92,14 +94,14 @@ func (app *App) Cluster() {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Send()
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to describe cluster: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while describing cluster")
-				SendStatusWithDefaultTTL("[red]timeout while describing cluster")
+				SendStatusError("[red]timeout while describing cluster")
 				return
 			}
 		}
@@ -158,7 +160,7 @@ func (app *App) ClustersTableInputHandler(ct *tview.Table) {
 
 		if IsKey(event, 'd') {
 			if !app.isClusterSelected(app.Selected) || app.Selected.Cluster.Name != clusterName {
-				SendStatusWithDefaultTTL("[red]to perform operation, select cluster")
+				SendStatusError("[red]to perform operation, select cluster")
 				return event
 			}
 			Publish(ClustersChannel, GetClusterEventType, Payload{Force: true})

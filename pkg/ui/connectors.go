@@ -41,24 +41,26 @@ const (
 )
 
 // ConnectorsChannel is the channel for connector events.
-var ConnectorsChannel = make(chan Event)
+var ConnectorsChannel = NewEventChannel()
 
 // RunConnectorsEventHandler processes connector events from the channel.
-func (app *App) RunConnectorsEventHandler(ctx context.Context, in chan Event) {
+func (app *App) RunConnectorsEventHandler(ctx context.Context, in *EventChannel) {
+	in.Run(ctx)
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				log.Debug().Msg("shutting down connectors event handler")
 				return
-			case event := <-in:
+			case event := <-in.C:
 				switch event.Type {
 				case GetConnectorsEventType:
 					pageName := util.BuildPageKey(app.Selected.Connect.Name, Connectors)
 					force := event.Payload.Force
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.Connectors()
 					}
@@ -73,7 +75,7 @@ func (app *App) RunConnectorsEventHandler(ctx context.Context, in chan Event) {
 					)
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.ConnectorDetail(connectorName)
 					}
@@ -107,7 +109,7 @@ func (app *App) Connectors() {
 
 	c := app.GetCurrentConnectClient()
 	pageKey := util.BuildPageKey(app.Selected.Connect.Name, Connectors)
-	SendStatusInfinite("getting connectors...")
+	SendStatusProgress("getting connectors...")
 	c.ListConnectors(resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -115,9 +117,12 @@ func (app *App) Connectors() {
 		for {
 			select {
 			case connectorNames := <-resultCh:
-				app.QueueUpdateDraw(func() {
-					statuses := app.fetchConnectorStatuses(c, connectorNames)
+				// Fetched here rather than inside the update: it is one HTTP round trip
+				// per connector, and on the UI goroutine that is the whole terminal
+				// frozen for as long as the worker takes to answer all of them.
+				statuses := app.fetchConnectorStatuses(c, connectorNames)
 
+				app.QueueUpdateDraw(func() {
 					table := app.NewConnectorsTable(connectorNames, statuses)
 					title := util.BuildTitle(Connectors,
 						"["+strconv.Itoa(len(connectorNames))+"]")
@@ -308,12 +313,12 @@ func (app *App) Connectors() {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to list connectors")
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+				SendStatusError(fmt.Sprintf("[red]%s", err.Error()))
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while listing connectors")
-				SendStatusWithDefaultTTL("[red]timeout while listing connectors")
+				SendStatusError("[red]timeout while listing connectors")
 				return
 			}
 		}
@@ -373,7 +378,7 @@ func (app *App) ConnectorDetail(name string) {
 
 	c := app.GetCurrentConnectClient()
 	pageKey := util.BuildPageKey(app.Selected.Connect.Name, Connectors, name)
-	SendStatusInfinite(fmt.Sprintf("getting connector '%s' details...", name))
+	SendStatusProgress(fmt.Sprintf("getting connector '%s' details...", name))
 	c.DescribeConnector(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -434,14 +439,14 @@ func (app *App) ConnectorDetail(name string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to get connector details")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to get connector details: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while getting connector details")
-				SendStatusWithDefaultTTL("[red]timeout while getting connector details")
+				SendStatusError("[red]timeout while getting connector details")
 				return
 			}
 		}
@@ -633,7 +638,7 @@ func (app *App) EditConnectorConfig(name string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentConnectClient()
-	SendStatusInfinite("fetching connector config for edit...")
+	SendStatusProgress("fetching connector config for edit...")
 	c.GetConnectorConfig(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -647,12 +652,12 @@ func (app *App) EditConnectorConfig(name string) {
 			})
 		case err := <-errorCh:
 			log.Error().Err(err).Msg("failed to fetch connector config for edit")
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				fmt.Sprintf("[red]failed to fetch connector config: %s", err.Error()),
 			)
 		case <-ctx.Done():
 			log.Error().Msg("timeout while fetching connector config for edit")
-			SendStatusWithDefaultTTL("[red]timeout while fetching connector config")
+			SendStatusError("[red]timeout while fetching connector config")
 		}
 	}()
 }
@@ -662,7 +667,7 @@ func (app *App) openEditorForConfig(name string, config map[string]interface{}) 
 	// Marshal to pretty JSON
 	oldJSON, err := json.MarshalIndent(config, "", "    ")
 	if err != nil {
-		SendStatusWithDefaultTTL("[red]failed to marshal connector config")
+		SendStatusError("[red]failed to marshal connector config")
 		return
 	}
 	oldHash := sha256.Sum256(bytes.TrimRight(oldJSON, "\r\n\t "))
@@ -675,14 +680,14 @@ func (app *App) openEditorForConfig(name string, config map[string]interface{}) 
 	// Check if content changed (trim trailing whitespace so editor newline conventions don't matter)
 	newHash := sha256.Sum256(bytes.TrimRight(newContent, "\r\n\t "))
 	if bytes.Equal(oldHash[:], newHash[:]) {
-		SendStatusWithDefaultTTL("no changes detected")
+		SendStatusNote("no changes detected")
 		return
 	}
 
 	// Validate JSON
 	var newConfig map[string]interface{}
 	if err := json.Unmarshal(newContent, &newConfig); err != nil {
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]invalid JSON: %s", err.Error()))
+		SendStatusError(fmt.Sprintf("[red]invalid JSON: %s", err.Error()))
 		return
 	}
 
@@ -695,7 +700,7 @@ func (app *App) openEditorForConfig(name string, config map[string]interface{}) 
 func (app *App) ConnectorConfigConfirm(name string, newConfig map[string]interface{}) {
 	prettyJSON, err := json.MarshalIndent(newConfig, "", "    ")
 	if err != nil {
-		SendStatusWithDefaultTTL("[red]failed to format config for display")
+		SendStatusError("[red]failed to format config for display")
 		return
 	}
 
@@ -737,7 +742,7 @@ func (app *App) UpdateConnectorConfig(name string, config map[string]interface{}
 	errorCh := make(chan error)
 
 	c := app.GetCurrentConnectClient()
-	SendStatusInfinite("updating connector config...")
+	SendStatusProgress("updating connector config...")
 	c.UpdateConnectorConfig(name, config, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -745,24 +750,20 @@ func (app *App) UpdateConnectorConfig(name string, config map[string]interface{}
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(
-					fmt.Sprintf("connector '%s' config updated", name),
-					2*time.Second,
-					false,
-				)
+				SendStatusDone(fmt.Sprintf("connector '%s' config updated", name))
 				Publish(ConnectorsChannel, GetConnectorEventType, Payload{name, true})
 				cancel()
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to update connector config")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to update connector config: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while updating connector config")
-				SendStatusWithDefaultTTL("[red]timeout while updating connector config")
+				SendStatusError("[red]timeout while updating connector config")
 				return
 			}
 		}
@@ -782,7 +783,7 @@ func (app *App) openEditorForNewConnector() {
 	}
 
 	if len(bytes.TrimSpace(newContent)) == 0 {
-		SendStatusWithDefaultTTL("empty file, aborting")
+		SendStatusNote("empty file, aborting")
 		return
 	}
 
@@ -791,15 +792,15 @@ func (app *App) openEditorForNewConnector() {
 		Config map[string]interface{} `json:"config"`
 	}
 	if err := json.Unmarshal(newContent, &req); err != nil {
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]invalid JSON: %s", err.Error()))
+		SendStatusError(fmt.Sprintf("[red]invalid JSON: %s", err.Error()))
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		SendStatusWithDefaultTTL("[red]connector name cannot be empty")
+		SendStatusError("[red]connector name cannot be empty")
 		return
 	}
 	if len(req.Config) == 0 {
-		SendStatusWithDefaultTTL("[red]connector config cannot be empty")
+		SendStatusError("[red]connector config cannot be empty")
 		return
 	}
 
@@ -811,7 +812,7 @@ func (app *App) openEditorForNewConnector() {
 func (app *App) ConnectorCreateConfirm(name string, config map[string]interface{}) {
 	prettyJSON, err := json.MarshalIndent(config, "", "    ")
 	if err != nil {
-		SendStatusWithDefaultTTL("[red]failed to format config for display")
+		SendStatusError("[red]failed to format config for display")
 		return
 	}
 
@@ -853,7 +854,7 @@ func (app *App) CreateConnectorResultHandler(name string, config map[string]inte
 	errorCh := make(chan error)
 
 	c := app.GetCurrentConnectClient()
-	SendStatusInfinite(fmt.Sprintf("creating connector '%s'...", name))
+	SendStatusProgress(fmt.Sprintf("creating connector '%s'...", name))
 	c.CreateConnector(name, config, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -861,24 +862,20 @@ func (app *App) CreateConnectorResultHandler(name string, config map[string]inte
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(
-					fmt.Sprintf("connector '%s' created", name),
-					2*time.Second,
-					false,
-				)
+				SendStatusDone(fmt.Sprintf("connector '%s' created", name))
 				Publish(ConnectorsChannel, GetConnectorsEventType, Payload{nil, true})
 				cancel()
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to create connector")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to create connector: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while creating connector")
-				SendStatusWithDefaultTTL("[red]timeout while creating connector")
+				SendStatusError("[red]timeout while creating connector")
 				return
 			}
 		}
@@ -889,7 +886,7 @@ func (app *App) CreateConnectorResultHandler(name string, config map[string]inte
 func (app *App) TaskActionsModal(detail *connect.ConnectorDetail) {
 	tasks := detail.Status.Tasks
 	if len(tasks) == 0 {
-		SendStatusWithDefaultTTL("no tasks found for this connector")
+		SendStatusNote("no tasks found for this connector")
 		return
 	}
 
@@ -987,7 +984,7 @@ func (app *App) fetchConnectorOffsets(name string, onSuccess func([]connect.Conn
 	errorCh := make(chan error)
 
 	c := app.GetCurrentConnectClient()
-	SendStatusInfinite(fmt.Sprintf("getting connector '%s' offsets...", name))
+	SendStatusProgress(fmt.Sprintf("getting connector '%s' offsets...", name))
 	c.GetConnectorOffsets(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -997,7 +994,7 @@ func (app *App) fetchConnectorOffsets(name string, onSuccess func([]connect.Conn
 			case offsets := <-resultCh:
 				if len(offsets) == 0 {
 					ClearStatus()
-					SendStatusWithDefaultTTL("no offsets found for this connector")
+					SendStatusNote("no offsets found for this connector")
 					cancel()
 					return
 				}
@@ -1009,14 +1006,14 @@ func (app *App) fetchConnectorOffsets(name string, onSuccess func([]connect.Conn
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to get connector offsets")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to get connector offsets: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while getting connector offsets")
-				SendStatusWithDefaultTTL("[red]timeout while getting connector offsets")
+				SendStatusError("[red]timeout while getting connector offsets")
 				return
 			}
 		}
@@ -1045,7 +1042,7 @@ func (app *App) buildConnectorOffsetsModal(name, state string, offsets []connect
 					return event
 				}
 				if !strings.EqualFold(state, "STOPPED") {
-					SendStatusWithDefaultTTL("[red]connector must be stopped to delete its offsets")
+					SendStatusError("[red]connector must be stopped to delete its offsets")
 					return event
 				}
 				Publish(ConnectorsChannel, DeleteConnectorOffsetsEventType, Payload{name, false})
@@ -1083,7 +1080,7 @@ func (app *App) ExecuteTaskAction(connectorName string, taskID int, action strin
 	errorCh := make(chan error)
 
 	c := app.GetCurrentConnectClient()
-	SendStatusInfinite(fmt.Sprintf("%sing task %d...", action, taskID))
+	SendStatusProgress(fmt.Sprintf("%sing task %d...", action, taskID))
 
 	switch action {
 	case "restart":
@@ -1099,24 +1096,20 @@ func (app *App) ExecuteTaskAction(connectorName string, taskID int, action strin
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(
-					fmt.Sprintf("task %d restarted", taskID),
-					2*time.Second,
-					false,
-				)
+				SendStatusDone(fmt.Sprintf("task %d restarted", taskID))
 				Publish(ConnectorsChannel, GetConnectorEventType, Payload{connectorName, true})
 				cancel()
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msgf("failed to %s task %d", action, taskID)
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to %s task %d: %s", action, taskID, err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msgf("timeout while %sing task %d", action, taskID)
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]timeout while %sing task %d", action, taskID),
 				)
 				return
@@ -1229,7 +1222,7 @@ func (app *App) ExecuteConnectorAction(name, action string) {
 	forms, ok := connectorActionVerbForms[action]
 	if !ok {
 		log.Error().Str("action", action).Msg("unsupported connector action")
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]unsupported connector action: %s", action))
+		SendStatusError(fmt.Sprintf("[red]unsupported connector action: %s", action))
 		return
 	}
 
@@ -1237,7 +1230,7 @@ func (app *App) ExecuteConnectorAction(name, action string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentConnectClient()
-	SendStatusInfinite(fmt.Sprintf("%s connector...", forms.ing))
+	SendStatusProgress(fmt.Sprintf("%s connector...", forms.ing))
 
 	switch action {
 	case "pause":
@@ -1259,11 +1252,7 @@ func (app *App) ExecuteConnectorAction(name, action string) {
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(
-					fmt.Sprintf("connector '%s' %s", name, forms.ed),
-					2*time.Second,
-					false,
-				)
+				SendStatusDone(fmt.Sprintf("connector '%s' %s", name, forms.ed))
 				// The worker accepts the action before it carries it out, so refreshing
 				// straight away redraws the old state and the next action is offered against
 				// it. Wait for the state the action asks for; a connector that has not
@@ -1280,14 +1269,14 @@ func (app *App) ExecuteConnectorAction(name, action string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msgf("failed to %s connector", action)
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to %s connector: %s", action, err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msgf("timeout while %s connector", forms.ing)
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]timeout while %s connector", forms.ing),
 				)
 				return
@@ -1310,7 +1299,7 @@ func (app *App) DeleteConnectorResultHandler(name string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentConnectClient()
-	SendStatusInfinite("deleting connector")
+	SendStatusProgress("deleting connector")
 	c.DeleteConnector(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -1318,11 +1307,7 @@ func (app *App) DeleteConnectorResultHandler(name string) {
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(
-					fmt.Sprintf("connector '%s' has been deleted", name),
-					2*time.Second,
-					false,
-				)
+				SendStatusDone(fmt.Sprintf("connector '%s' has been deleted", name))
 				connectName := app.Selected.Connect.Name
 				app.QueueUpdateDraw(func() { app.RemovePagesFor(connectName, name) })
 				Publish(ConnectorsChannel, GetConnectorsEventType, Payload{nil, true})
@@ -1330,14 +1315,14 @@ func (app *App) DeleteConnectorResultHandler(name string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to delete connector")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to delete connector: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while deleting connector")
-				SendStatusWithDefaultTTL("[red]timeout while deleting connector")
+				SendStatusError("[red]timeout while deleting connector")
 				return
 			}
 		}
@@ -1357,7 +1342,7 @@ func (app *App) DeleteConnectorOffsetsResultHandler(name string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentConnectClient()
-	SendStatusInfinite("deleting connector offsets")
+	SendStatusProgress("deleting connector offsets")
 	c.DeleteConnectorOffsets(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -1365,11 +1350,7 @@ func (app *App) DeleteConnectorOffsetsResultHandler(name string) {
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(
-					fmt.Sprintf("offsets for connector '%s' have been deleted", name),
-					2*time.Second,
-					false,
-				)
+				SendStatusDone(fmt.Sprintf("offsets for connector '%s' have been deleted", name))
 				app.QueueUpdateDraw(func() {
 					app.HideModalPage(ConnectorOffsets)
 				})
@@ -1378,14 +1359,14 @@ func (app *App) DeleteConnectorOffsetsResultHandler(name string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to delete connector offsets")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to delete connector offsets: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while deleting connector offsets")
-				SendStatusWithDefaultTTL("[red]timeout while deleting connector offsets")
+				SendStatusError("[red]timeout while deleting connector offsets")
 				return
 			}
 		}
@@ -1415,11 +1396,11 @@ func (app *App) CopyConnectorOffsetsModal(connectorName string, offsets []connec
 	submit := func() {
 		targetConnector := strings.TrimSpace(input.GetText())
 		if targetConnector == "" {
-			SendStatusWithDefaultTTL("[red]connector name cannot be empty")
+			SendStatusError("[red]connector name cannot be empty")
 			return
 		}
 		if targetConnector == connectorName {
-			SendStatusWithDefaultTTL("[red]target connector must be different")
+			SendStatusError("[red]target connector must be different")
 			return
 		}
 		app.HideModalPage(CopyConnectorOffsets)
@@ -1468,7 +1449,7 @@ func (app *App) CopyConnectorOffsetsResultHandler(targetName string, offsets []c
 
 	namesCh := make(chan []string)
 	errorCh := make(chan error)
-	SendStatusInfinite(fmt.Sprintf("checking connector '%s'...", targetName))
+	SendStatusProgress(fmt.Sprintf("checking connector '%s'...", targetName))
 	c.ListConnectors(namesCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -1477,16 +1458,16 @@ func (app *App) CopyConnectorOffsetsResultHandler(targetName string, offsets []c
 		select {
 		case names := <-namesCh:
 			if !slices.Contains(names, targetName) {
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]connector '%s' does not exist", targetName))
+				SendStatusError(fmt.Sprintf("[red]connector '%s' does not exist", targetName))
 				return
 			}
 			app.setConnectorOffsets(c, targetName, offsets)
 		case err := <-errorCh:
 			log.Error().Err(err).Msg("failed to list connectors")
-			SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+			SendStatusError(fmt.Sprintf("[red]%s", err.Error()))
 		case <-ctx.Done():
 			log.Error().Msg("timeout while listing connectors")
-			SendStatusWithDefaultTTL("[red]timeout while listing connectors")
+			SendStatusError("[red]timeout while listing connectors")
 		}
 	}()
 }
@@ -1496,21 +1477,21 @@ func (app *App) setConnectorOffsets(c *connect.Client, targetName string, offset
 	resultCh := make(chan bool)
 	errorCh := make(chan error)
 
-	SendStatusInfinite(fmt.Sprintf("copying offsets to '%s'", targetName))
+	SendStatusProgress(fmt.Sprintf("copying offsets to '%s'", targetName))
 	c.SetConnectorOffsets(targetName, offsets, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 	defer cancel()
 
 	select {
 	case <-resultCh:
-		SendStatus(fmt.Sprintf("offsets copied to '%s'", targetName), 2*time.Second, false)
+		SendStatusDone(fmt.Sprintf("offsets copied to '%s'", targetName))
 	case err := <-errorCh:
 		log.Error().Err(err).Msg("failed to copy connector offsets")
-		SendStatusWithDefaultTTL(
+		SendStatusError(
 			fmt.Sprintf("[red]failed to copy connector offsets: %s", err.Error()),
 		)
 	case <-ctx.Done():
 		log.Error().Msg("timeout while copying connector offsets")
-		SendStatusWithDefaultTTL("[red]timeout while copying connector offsets")
+		SendStatusError("[red]timeout while copying connector offsets")
 	}
 }

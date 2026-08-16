@@ -41,7 +41,7 @@ func selectedRow(table *tview.Table, column, first int) (string, bool) {
 func selectedName(table *tview.Table, first int) (string, bool) {
 	name, ok := selectedRow(table, 0, first)
 	if !ok {
-		SendStatusWithDefaultTTL("nothing selected")
+		SendStatusNote("nothing selected")
 	}
 	return name, ok
 }

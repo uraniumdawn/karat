@@ -18,7 +18,7 @@ type ConsumeSpec struct {
 	FormatStr   string  // empty means use the default JSON formatter
 	ExitOnEnd   bool    // -e: stop when the last available message is received
 	Partitions  []int32 // -p: empty means consume all partitions
-	Count       int64   // -o <n>: per-partition message limit (0 = unlimited)
+	Count       int64   // -o <n> with -s:/-s@: per-partition message limit (0 = unlimited)
 	Filter      string  // | <pattern>: show only records whose formatted line contains pattern
 	KeySerdes   Serdes  // -d key=<serdes> or -d <serdes>
 	ValueSerdes Serdes  // -d value=<serdes> or -d <serdes>
@@ -40,6 +40,9 @@ type ConsumeSpec struct {
 //   - | <pattern>                            show only records whose formatted output contains pattern
 //
 // If -o is omitted entirely, defaults to tail last 100 messages per partition.
+// -o <n> on its own only positions the start n records behind the high-water mark;
+// consumption keeps following the topic afterwards unless -e is given. Combined with
+// -s:/-s@ it is a per-partition delivery limit instead, since those set the start.
 // -e:<offset> requires -s:; -e@<ts> requires -s@.
 // When a ToSpec (-e:/-e@) is present, the -o <n> per-partition count is ignored.
 // | <pattern> is extracted before tokenizing so it may appear anywhere, including after -f.
@@ -191,9 +194,14 @@ func finalizeSpec(spec ConsumeSpec) (ConsumeSpec, error) {
 		count := spec.Count
 		if count == 0 {
 			count = 100
-			spec.Count = 100
 		}
 		spec.From = FromSpec{Type: "tail", Offset: count}
+		// The tail start is already count records behind the high-water mark, so the
+		// backlog is bounded by the start position alone. Keeping count as a
+		// per-partition delivery limit as well would stop the consumer the moment the
+		// backlog is drained, making -o <n> behave like -o <n> -e instead of tailing
+		// live. The limit only applies when -s: or -s@ set the start independently.
+		spec.Count = 0
 	}
 
 	if spec.To.Type != "" {

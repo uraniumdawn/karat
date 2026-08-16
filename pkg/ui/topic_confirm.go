@@ -121,7 +121,7 @@ func (app *App) CreateTopicConfirm(params TopicParams) {
 // the UI goroutine.
 func (app *App) UpdateTopicConfirm(change topicChange) {
 	if change.empty() {
-		SendStatusWithDefaultTTL("no changes detected")
+		SendStatusNote("no changes detected")
 		return
 	}
 

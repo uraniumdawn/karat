@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -40,28 +41,48 @@ func (app *App) StartConsuming(
 	records := make(chan consumer.Record, 200)
 	errs := make(chan error, 20)
 
+	// No SetChangedFunc: every write to this view already happens inside a QueueUpdateDraw,
+	// which redraws. A changed handler calling Draw would queue a second, redundant update per
+	// record — tview runs the handler on a goroutine of its own, so a fast topic leaves a
+	// goroutine parked in QueueUpdate for every record consumed.
 	view := tview.NewTextView().
 		SetTextAlign(tview.AlignLeft).
 		SetDynamicColors(true).
 		SetWrap(true).
 		SetWordWrap(false).
 		SetMaxLines(5000).
-		SetScrollable(true).
-		SetChangedFunc(func() { app.Draw() })
+		SetScrollable(true)
 	view.SetBorder(true).SetBorderPadding(0, 0, 1, 0)
 
 	pageName := util.BuildPageKey(app.Selected.Cluster.Name, ConsumeOutput, topicName)
 	app.AddToPagesRegistry(pageName, view, ConsumeOutputPageMenu, false)
 
+	// Consuming is an operation in flight, so it takes the spinner and stands until it is
+	// over: the record count sent when the drain goroutine finishes replaces it.
+	SendStatusProgress(fmt.Sprintf("consuming '%s'", topicName))
+
 	var recordCount int64
 	var isActive int32 = 1
 	spinnerIdx := 0
 
+	// The statistics are written by the goroutines draining records and errors, and read by
+	// the UI goroutine when <F2> opens the statistics modal, hence the mutex.
 	partitionCounts := make(map[int32]int64)
 	partitionFirstOffset := make(map[int32]int64)
 	partitionLastOffset := make(map[int32]int64)
 	var consumeErrors []string
-	var errorsMu sync.Mutex
+	var statsMu sync.Mutex
+
+	// statsSnapshot copies the statistics so the modal reads values the drain goroutines
+	// cannot still be writing to.
+	statsSnapshot := func() (counts, first, last map[int32]int64, errs []string) {
+		statsMu.Lock()
+		defer statsMu.Unlock()
+		return maps.Clone(partitionCounts),
+			maps.Clone(partitionFirstOffset),
+			maps.Clone(partitionLastOffset),
+			append([]string(nil), consumeErrors...)
+	}
 
 	// Spinner goroutine — updates title while consuming.
 	go func() {
@@ -85,28 +106,20 @@ func (app *App) StartConsuming(
 	view.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if IsKey(event, 't') {
 			if atomic.LoadInt32(&isActive) == 0 {
-				SendStatus("consumer already stopped", 2*time.Second, false)
+				SendStatusDone("consumer already stopped")
 				return nil
 			}
 			cancelFunc()
-			SendStatusInfinite("stopping consumer…")
+			SendStatusProgress("stopping consumer…")
 			return nil
 		}
 		if event.Key() == tcell.KeyF2 {
 			if atomic.LoadInt32(&isActive) == 1 {
-				SendStatus("consumer still active — press t to stop first", 2*time.Second, false)
+				SendStatusDone("consumer still active — press t to stop first")
 				return nil
 			}
-			errorsMu.Lock()
-			errcopy := append([]string(nil), consumeErrors...)
-			errorsMu.Unlock()
-			app.ConsumeStatsModal(
-				topicName,
-				partitionCounts,
-				partitionFirstOffset,
-				partitionLastOffset,
-				errcopy,
-			)
+			counts, first, last, errs := statsSnapshot()
+			app.ConsumeStatsModal(topicName, counts, first, last, errs)
 			app.ShowModalPage(ConsumeStats)
 			return nil
 		}
@@ -114,7 +127,7 @@ func (app *App) StartConsuming(
 		// deleting things in Kafka and must not also mean "close this".
 		if IsKey(event, 'x') {
 			if atomic.LoadInt32(&isActive) == 1 {
-				SendStatus("consumer is still active — press t to stop first", 2*time.Second, false)
+				SendStatusDone("consumer is still active — press t to stop first")
 				return nil
 			}
 			app.RemoveFromPagesRegistry(pageName)
@@ -134,7 +147,7 @@ func (app *App) StartConsuming(
 			app.QueueUpdateDraw(func() {
 				view.SetTitle(fmt.Sprintf(" Consume: %s [%d records] ", topicName, cnt))
 			})
-			SendStatusInfiniteWithouSpinner(fmt.Sprintf("consumed %d records", cnt))
+			SendStatusDone(fmt.Sprintf("consumed %d records", cnt))
 		}()
 		for rec := range records {
 			if ctx.Err() != nil {
@@ -148,11 +161,13 @@ func (app *App) StartConsuming(
 				continue
 			}
 			atomic.AddInt64(&recordCount, 1)
+			statsMu.Lock()
 			partitionCounts[rec.Partition]++
 			if _, seen := partitionFirstOffset[rec.Partition]; !seen {
 				partitionFirstOffset[rec.Partition] = rec.Offset
 			}
 			partitionLastOffset[rec.Partition] = rec.Offset
+			statsMu.Unlock()
 			app.QueueUpdateDraw(func() {
 				_, _ = fmt.Fprintf(view, "%s\n", line)
 				view.ScrollToEnd()
@@ -164,9 +179,9 @@ func (app *App) StartConsuming(
 	go func() {
 		for err := range errs {
 			msg := err.Error()
-			errorsMu.Lock()
+			statsMu.Lock()
 			consumeErrors = append(consumeErrors, msg)
-			errorsMu.Unlock()
+			statsMu.Unlock()
 			app.QueueUpdateDraw(func() {
 				_, _ = fmt.Fprintf(view, "[red]error: %s[-]\n", msg)
 			})
@@ -226,7 +241,7 @@ type preparedConsume struct {
 func (app *App) prepareConsume(topicName, raw string) (preparedConsume, bool) {
 	spec, err := consumer.ParseConsumeArgs(raw)
 	if err != nil {
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		SendStatusError(fmt.Sprintf("[red]%s", err.Error()))
 		return preparedConsume{}, false
 	}
 
@@ -249,12 +264,12 @@ func (app *App) prepareConsume(topicName, raw string) (preparedConsume, bool) {
 	// Resolve schema registry by name if avro serdes is requested.
 	if spec.KeySerdes.Kind == consumer.SerdesAvro || spec.ValueSerdes.Kind == consumer.SerdesAvro {
 		if spec.SRName == "" {
-			SendStatusWithDefaultTTL("[red]-d avro requires -r <sr-name>")
+			SendStatusError("[red]-d avro requires -r <sr-name>")
 			return preparedConsume{}, false
 		}
 		srConfig, ok := app.SchemaRegistries[spec.SRName]
 		if !ok {
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				fmt.Sprintf("[red]schema registry %q not configured", spec.SRName),
 			)
 			return preparedConsume{}, false
@@ -264,7 +279,7 @@ func (app *App) prepareConsume(topicName, raw string) (preparedConsume, bool) {
 			var clientErr error
 			srClient, clientErr = schemaregistry.NewSchemaRegistryClient(srConfig)
 			if clientErr != nil {
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]schema registry client: %s", clientErr),
 				)
 				return preparedConsume{}, false
@@ -295,23 +310,17 @@ func (app *App) rememberConsumeParams(topicName, raw string) {
 	}
 }
 
-// ConsumeWithLastParams starts consuming topicName straight away with the parameters last
-// used on it, falling back to the defaults when it has never been consumed on this cluster.
-func (app *App) ConsumeWithLastParams(topicName string) {
-	raw := app.History.LastConsume(app.Selected.Cluster.Name, topicName)
-	if raw == "" {
-		raw = app.defaultConsumeParams()
-	}
-
-	prepared, ok := app.prepareConsume(topicName, raw)
+// ConsumeWithDefaultParams starts consuming topicName straight away with the defaults,
+// regardless of what was last used on it. The parameters are not remembered: recording them would
+// overwrite the entry the parameters modal prefills with, costing the user the flags they
+// tuned by hand for the sake of a default they can always get back by pressing <c>.
+func (app *App) ConsumeWithDefaultParams(topicName string) {
+	prepared, ok := app.prepareConsume(topicName, app.defaultConsumeParams())
 	if !ok {
 		return
 	}
 
 	app.StartConsuming(topicName, prepared.params, prepared.formatFn, prepared.filter)
-	app.rememberConsumeParams(topicName, raw)
-	// The status line renders colour tags, and params routinely carry '[' in format strings.
-	SendStatus(tview.Escape(raw), 3*time.Second, false)
 }
 
 // consumeParamsModalHeight leaves two lines of parameters visible between the borders.
@@ -396,7 +405,7 @@ func (app *App) ConsumeHistoryModal(
 ) bool {
 	entries := app.History.ConsumeFor(app.Selected.Cluster.Name, topicName)
 	if len(entries) == 0 {
-		SendStatusWithDefaultTTL("no consume history yet")
+		SendStatusNote("no consume history yet")
 		return false
 	}
 
@@ -502,7 +511,9 @@ func stripComments(s string) string {
 // one; consumeReference either expands the markers to colour tags or drops them.
 const consumeReferenceTemplate = `{k}Flags{/}
   {k}-o{/}    beginning | earliest | end | latest | <n>
-               tail last n messages per partition (default: 100)
+               start n messages back per partition, then keep following
+               (default: 100; add -e to stop at the high-water mark)
+               with -s: or -s@ it limits how many messages are read instead
   {k}-s:{/}<offset>  start from absolute partition offset
   {k}-s@{/}<ts>      start from timestamp
   {k}-e:{/}<offset>  stop at offset, exclusive (requires -s:; overrides -o <n>)

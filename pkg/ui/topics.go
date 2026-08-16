@@ -36,23 +36,25 @@ const (
 	CliTemplatesEventType      EventType = "topic:cli-templates"
 )
 
-var TopicsChannel = make(chan Event)
+var TopicsChannel = NewEventChannel()
 
-func (app *App) RunTopicsEventHandler(ctx context.Context, in chan Event) {
+func (app *App) RunTopicsEventHandler(ctx context.Context, in *EventChannel) {
+	in.Run(ctx)
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				log.Debug().Msg("shutting down topics event handler")
 				return
-			case event := <-in:
+			case event := <-in.C:
 				switch event.Type {
 				case GetTopicsEventType:
 					pageName := util.BuildPageKey(app.Selected.Cluster.Name, Topics)
 					force := event.Payload.Force
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.Topics(force)
 					}
@@ -63,7 +65,7 @@ func (app *App) RunTopicsEventHandler(ctx context.Context, in chan Event) {
 					pageName := util.BuildPageKey(app.Selected.Cluster.Name, Topics, topicName)
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.Topic(topicName)
 					}
@@ -74,7 +76,7 @@ func (app *App) RunTopicsEventHandler(ctx context.Context, in chan Event) {
 					pageName := util.BuildPageKey(app.Selected.Cluster.Name, Producers, topicName)
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.TopicProducers(topicName)
 					}
@@ -119,7 +121,7 @@ func (app *App) Topics(force bool) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("getting topics")
+	SendStatusProgress("getting topics")
 	c.Topics(resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -226,7 +228,7 @@ func (app *App) Topics(force bool) {
 							if !ok {
 								return nil
 							}
-							app.ConsumeWithLastParams(topicName)
+							app.ConsumeWithDefaultParams(topicName)
 						}
 
 						if IsKey(event, '.') {
@@ -428,12 +430,12 @@ func (app *App) Topics(force bool) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to list topics")
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to list topics: %s", err.Error()))
+				SendStatusError(fmt.Sprintf("[red]failed to list topics: %s", err.Error()))
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while listing topics")
-				SendStatusWithDefaultTTL("[red]timeout while listing topics")
+				SendStatusError("[red]timeout while listing topics")
 				return
 			}
 		}
@@ -449,7 +451,7 @@ func (app *App) Topic(name string) {
 	pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Topic, name)
 	autoRefreshing := app.GetAutoUpdateLabel(pageKey) != ""
 	if !autoRefreshing {
-		SendStatusInfinite("getting topic description")
+		SendStatusProgress("getting topic description")
 	}
 	c.DescribeTopic(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
@@ -529,12 +531,12 @@ func (app *App) Topic(name string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to describe topic")
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to describe topic: %s", err.Error()))
+				SendStatusError(fmt.Sprintf("[red]failed to describe topic: %s", err.Error()))
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while describing topic")
-				SendStatusWithDefaultTTL("[red]timeout while describing topic")
+				SendStatusError("[red]timeout while describing topic")
 				return
 			}
 		}
@@ -546,14 +548,14 @@ func (app *App) Topic(name string) {
 func (app *App) TopicProducers(name string) {
 	fc := app.GetCurrentFranzClient()
 	if fc == nil {
-		SendStatusWithDefaultTTL("[red]producers view requires franz-go connectivity for this cluster")
+		SendStatusError("[red]producers view requires franz-go connectivity for this cluster")
 		return
 	}
 
 	pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Producers, name)
 	autoRefreshing := app.GetAutoUpdateLabel(pageKey) != ""
 	if !autoRefreshing {
-		SendStatusInfinite("getting topic producers")
+		SendStatusProgress("getting topic producers")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -562,7 +564,7 @@ func (app *App) TopicProducers(name string) {
 		result, err := fc.DescribeTopicProducers(ctx, name)
 		if err != nil {
 			log.Error().Err(err).Str("topic", name).Msg("failed to describe topic producers")
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				fmt.Sprintf("[red]failed to describe topic producers: %s", err.Error()),
 			)
 			return
@@ -614,7 +616,7 @@ func (app *App) CreateTopicResultHandler(
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("creating topic")
+	SendStatusProgress("creating topic")
 	c.CreateTopic(name, numPartitions, replicationFactor, config, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -622,18 +624,18 @@ func (app *App) CreateTopicResultHandler(
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(fmt.Sprintf("topic '%s' has been created", name), 2*time.Second, false)
+				SendStatusDone(fmt.Sprintf("topic '%s' has been created", name))
 				Publish(TopicsChannel, GetTopicsEventType, Payload{nil, true})
 				cancel()
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to create topic")
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+				SendStatusError(fmt.Sprintf("[red]%s", err.Error()))
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while creating topics")
-				SendStatusWithDefaultTTL("[red]timeout while creating topics")
+				SendStatusError("[red]timeout while creating topics")
 				return
 			}
 		}
@@ -699,7 +701,7 @@ func (app *App) CloneTopic(sourceTopic string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("fetching topic configuration")
+	SendStatusProgress("fetching topic configuration")
 	c.DescribeTopic(sourceTopic, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -715,14 +717,14 @@ func (app *App) CloneTopic(sourceTopic string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to fetch topic config")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to fetch topic config: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while fetching topic config")
-				SendStatusWithDefaultTTL("[red]timeout while fetching topic config")
+				SendStatusError("[red]timeout while fetching topic config")
 				return
 			}
 		}
@@ -734,7 +736,7 @@ func (app *App) UpdateTopic(topicName string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("fetching topic configuration")
+	SendStatusProgress("fetching topic configuration")
 	c.DescribeTopic(topicName, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -750,14 +752,14 @@ func (app *App) UpdateTopic(topicName string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to fetch topic config")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to fetch topic config: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while fetching topic config")
-				SendStatusWithDefaultTTL("[red]timeout while fetching topic config")
+				SendStatusError("[red]timeout while fetching topic config")
 				return
 			}
 		}
@@ -799,7 +801,7 @@ func (app *App) UpdateTopicResultHandler(
 	if len(config) > 0 || len(removed) > 0 {
 		resultCh := make(chan bool)
 		errorCh := make(chan error)
-		SendStatusInfinite("updating topic configuration")
+		SendStatusProgress("updating topic configuration")
 		c.UpdateTopicConfig(name, config, removed, resultCh, errorCh)
 		ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -807,17 +809,13 @@ func (app *App) UpdateTopicResultHandler(
 			for {
 				select {
 				case <-resultCh:
-					SendStatus(
-						updatedTopicConfigMessage(name, len(removed)),
-						2*time.Second,
-						false,
-					)
+					SendStatusDone(updatedTopicConfigMessage(name, len(removed)))
 					updateDone(true)
 					cancel()
 					return
 				case err := <-errorCh:
 					log.Error().Err(err).Msg("failed to update topic configuration")
-					SendStatusWithDefaultTTL(
+					SendStatusError(
 						fmt.Sprintf(
 							"[red]failed to update topic configuration: %s",
 							err.Error(),
@@ -828,7 +826,7 @@ func (app *App) UpdateTopicResultHandler(
 					return
 				case <-ctx.Done():
 					log.Error().Msg("timeout while updating topic config")
-					SendStatusWithDefaultTTL("[red]timeout while updating topic config")
+					SendStatusError("[red]timeout while updating topic config")
 					updateDone(true)
 					return
 				}
@@ -839,7 +837,7 @@ func (app *App) UpdateTopicResultHandler(
 	if newPartitions > currentPartitions {
 		resultCh := make(chan bool)
 		errorCh := make(chan error)
-		SendStatusInfinite("increasing partition count")
+		SendStatusProgress("increasing partition count")
 		c.IncreasePartitions(name, newPartitions, resultCh, errorCh)
 		ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -847,21 +845,17 @@ func (app *App) UpdateTopicResultHandler(
 			for {
 				select {
 				case <-resultCh:
-					SendStatus(
-						fmt.Sprintf(
-							"topic '%s' partitions increased to %d",
-							name,
-							newPartitions,
-						),
-						2*time.Second,
-						false,
-					)
+					SendStatusDone(fmt.Sprintf(
+						"topic '%s' partitions increased to %d",
+						name,
+						newPartitions,
+					))
 					updateDone(true)
 					cancel()
 					return
 				case err := <-errorCh:
 					log.Error().Err(err).Msg("failed to increase partition count")
-					SendStatusWithDefaultTTL(
+					SendStatusError(
 						fmt.Sprintf("[red]failed to increase partition count: %s", err.Error()),
 					)
 					updateDone(false)
@@ -869,7 +863,7 @@ func (app *App) UpdateTopicResultHandler(
 					return
 				case <-ctx.Done():
 					log.Error().Msg("timeout while increasing partition count")
-					SendStatusWithDefaultTTL("[red]timeout while increasing partition count")
+					SendStatusError("[red]timeout while increasing partition count")
 					updateDone(true)
 					return
 				}
@@ -927,7 +921,7 @@ func (app *App) DeleteTopicResultHandler(name string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("deleting topic")
+	SendStatusProgress("deleting topic")
 	c.DeleteTopic(name, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -935,7 +929,7 @@ func (app *App) DeleteTopicResultHandler(name string) {
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(fmt.Sprintf("topic '%s' has been deleted", name), 2*time.Second, false)
+				SendStatusDone(fmt.Sprintf("topic '%s' has been deleted", name))
 				// The topic's own pages — description, producers, consume output — describe
 				// something that no longer exists, so they go with it.
 				cluster := app.Selected.Cluster.Name
@@ -945,12 +939,12 @@ func (app *App) DeleteTopicResultHandler(name string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to delete topic")
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to delete topic: %s", err.Error()))
+				SendStatusError(fmt.Sprintf("[red]failed to delete topic: %s", err.Error()))
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while deleting topic")
-				SendStatusWithDefaultTTL("[red]timeout while deleting topic")
+				SendStatusError("[red]timeout while deleting topic")
 				return
 			}
 		}
@@ -970,7 +964,7 @@ func (app *App) RecreateTopic(sourceTopic string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("fetching topic configuration")
+	SendStatusProgress("fetching topic configuration")
 	c.DescribeTopic(sourceTopic, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -997,14 +991,14 @@ func (app *App) RecreateTopic(sourceTopic string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to fetch topic config")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to fetch topic config: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while fetching topic config")
-				SendStatusWithDefaultTTL("[red]timeout while fetching topic config")
+				SendStatusError("[red]timeout while fetching topic config")
 				return
 			}
 		}
@@ -1040,7 +1034,7 @@ func (app *App) RecreateTopicResultHandler(
 	errorCh := make(chan error, 1)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("recreating topic")
+	SendStatusProgress("recreating topic")
 	c.RecreateTopic(name, numPartitions, replicationFactor, config, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), recreateUITimeout)
 
@@ -1048,18 +1042,18 @@ func (app *App) RecreateTopicResultHandler(
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(fmt.Sprintf("topic '%s' has been recreated", name), 2*time.Second, false)
+				SendStatusDone(fmt.Sprintf("topic '%s' has been recreated", name))
 				Publish(TopicsChannel, GetTopicsEventType, Payload{nil, true})
 				cancel()
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to recreate topic")
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to recreate topic: %s", err.Error()))
+				SendStatusError(fmt.Sprintf("[red]failed to recreate topic: %s", err.Error()))
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while recreating topic")
-				SendStatusWithDefaultTTL("[red]timeout while recreating topic")
+				SendStatusError("[red]timeout while recreating topic")
 				return
 			}
 		}
@@ -1112,7 +1106,7 @@ func (app *App) topicDocumentSession(
 	buf, err := renderTopicDocument(header, name, replicationFactor, partitions, configs, defaults)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to render topic document")
-		SendStatusWithDefaultTTL("[red]failed to render topic document")
+		SendStatusError("[red]failed to render topic document")
 		return topicDocument{}, nil, false
 	}
 
@@ -1123,7 +1117,7 @@ func (app *App) topicDocumentSession(
 
 	doc, edits, _, err := parseTopicDocument(edited)
 	if err != nil {
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		SendStatusError(fmt.Sprintf("[red]%s", err.Error()))
 		return topicDocument{}, nil, false
 	}
 
@@ -1160,7 +1154,7 @@ func (app *App) CreateTopicDocument() {
 		Config:            configs,
 	}
 	if err := params.validate(); err != nil {
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		SendStatusError(fmt.Sprintf("[red]%s", err.Error()))
 		return
 	}
 
@@ -1185,7 +1179,7 @@ func (app *App) EditTopicDocument(topicName string, topicResult *client.TopicRes
 		return
 	}
 	if err := validateTopicDocumentEdit(doc, topicName, replicationFactor, partitionCount); err != nil {
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		SendStatusError(fmt.Sprintf("[red]%s", err.Error()))
 		return
 	}
 
@@ -1221,11 +1215,11 @@ func (app *App) CloneTopicDocument(sourceTopic string, topicResult *client.Topic
 		Config:            configs,
 	}
 	if err := params.validate(); err != nil {
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		SendStatusError(fmt.Sprintf("[red]%s", err.Error()))
 		return
 	}
 	if err := validateCloneName(params.TopicName, sourceTopic); err != nil {
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]%s", err.Error()))
+		SendStatusError(fmt.Sprintf("[red]%s", err.Error()))
 		return
 	}
 
