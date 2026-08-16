@@ -378,7 +378,7 @@ func (app *App) isConnectSelected(selected Selected) bool {
 // Callers use the return value to decide whether to abort the current operation.
 func (app *App) requireSelection(selected bool, msg string) bool {
 	if !selected {
-		SendStatusWithDefaultTTL(msg)
+		SendStatusNote(msg)
 		return false
 	}
 	return true

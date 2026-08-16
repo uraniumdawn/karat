@@ -52,17 +52,19 @@ var m = map[string]EventType{
 }
 
 // ResourcesChannel is the channel for resource events.
-var ResourcesChannel = make(chan Event)
+var ResourcesChannel = NewEventChannel()
 
 // RunResourcesEventHandler processes resource events from the channel.
-func (app *App) RunResourcesEventHandler(ctx context.Context, in chan Event) {
+func (app *App) RunResourcesEventHandler(ctx context.Context, in *EventChannel) {
+	in.Run(ctx)
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				log.Debug().Msg("shutting down resource event handler")
 				return
-			case event := <-in:
+			case event := <-in.C:
 				switch event.Type {
 				case ClustersResourceEventType:
 					Publish(ClustersChannel, GetClustersEventType, Payload{nil, false})

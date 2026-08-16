@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	sr "github.com/confluentinc/confluent-kafka-go/v2/schemaregistry"
 	"github.com/gdamore/tcell/v2"
@@ -34,7 +33,7 @@ const (
 )
 
 // SubjectsChannel is the channel for subject events.
-var SubjectsChannel = make(chan Event)
+var SubjectsChannel = NewEventChannel()
 
 // SubjectVersionPair represents a subject and version pair.
 type SubjectVersionPair struct {
@@ -43,21 +42,23 @@ type SubjectVersionPair struct {
 }
 
 // RunSubjectsEventHandler processes subject events from the channel.
-func (app *App) RunSubjectsEventHandler(ctx context.Context, in chan Event) {
+func (app *App) RunSubjectsEventHandler(ctx context.Context, in *EventChannel) {
+	in.Run(ctx)
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				log.Debug().Msg("shutting down subjects event handler")
 				return
-			case event := <-in:
+			case event := <-in.C:
 				switch event.Type {
 				case GetSubjectsEventType:
 					pageName := util.BuildPageKey(app.Selected.SchemaRegistry.Name, Subjects)
 					force := event.Payload.Force
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.Subjects()
 					}
@@ -72,7 +73,7 @@ func (app *App) RunSubjectsEventHandler(ctx context.Context, in chan Event) {
 					)
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.Versions(subject)
 					}
@@ -90,7 +91,7 @@ func (app *App) RunSubjectsEventHandler(ctx context.Context, in chan Event) {
 					)
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.Schema(subject, v)
 					}
@@ -106,7 +107,7 @@ func (app *App) Subjects() {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentSchemaRegistryClient()
-	SendStatusInfinite("getting subjects...")
+	SendStatusProgress("getting subjects...")
 	c.Subjects(resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -176,12 +177,12 @@ func (app *App) Subjects() {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to list subjects")
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to list subjects: %s", err.Error()))
+				SendStatusError(fmt.Sprintf("[red]failed to list subjects: %s", err.Error()))
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while listing subjects")
-				SendStatusWithDefaultTTL("[red]timeout while listing subjects")
+				SendStatusError("[red]timeout while listing subjects")
 				return
 			}
 		}
@@ -194,7 +195,7 @@ func (app *App) Versions(subject string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentSchemaRegistryClient()
-	SendStatusInfinite("getting subject's versions...")
+	SendStatusProgress("getting subject's versions...")
 	c.VersionsBySubject(subject, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -255,14 +256,14 @@ func (app *App) Versions(subject string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to list subject's versions")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to list subject's versions: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while listing subject's versions")
-				SendStatusWithDefaultTTL("[red]timeout while listing subject's versions")
+				SendStatusError("[red]timeout while listing subject's versions")
 				return
 			}
 		}
@@ -275,7 +276,7 @@ func (app *App) Schema(subject string, version int) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentSchemaRegistryClient()
-	SendStatusInfinite("getting schema")
+	SendStatusProgress("getting schema")
 	c.Schema(subject, version, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -288,7 +289,7 @@ func (app *App) Schema(subject string, version int) {
 				indentErr := json.Indent(&pretty, []byte(result.Metadata.Schema), "", "  ")
 				if indentErr != nil {
 					log.Error().Err(indentErr).Msg("failed to format schema")
-					SendStatusWithDefaultTTL(
+					SendStatusError(
 						fmt.Sprintf("[red]failed to format schema: %s", indentErr.Error()),
 					)
 					cancel()
@@ -324,7 +325,7 @@ func (app *App) Schema(subject string, version int) {
 						_, err := writer.Write([]byte(content))
 						if err != nil {
 							log.Error().Err(err).Msg("failed to write formatted schema")
-							SendStatusWithDefaultTTL(
+							SendStatusError(
 								"[red]failed to write formatted schema",
 							)
 						}
@@ -340,7 +341,7 @@ func (app *App) Schema(subject string, version int) {
 							}
 							if IsKey(event, '1') {
 								if karatErr != nil {
-									SendStatusWithDefaultTTL(
+									SendStatusError(
 										fmt.Sprintf(
 											"[red]failed to format schema: %s",
 											karatErr.Error(),
@@ -370,14 +371,14 @@ func (app *App) Schema(subject string, version int) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to list subject's versions")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to list subject's versions: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while listing subject's versions")
-				SendStatusWithDefaultTTL("[red]timeout while listing subject's versions")
+				SendStatusError("[red]timeout while listing subject's versions")
 				return
 			}
 		}
@@ -459,7 +460,7 @@ func (app *App) CloneSubject(sourceSubject string) {
 	errorCh := make(chan error, 2)
 
 	c := app.GetCurrentSchemaRegistryClient()
-	SendStatusInfinite("fetching subject schema")
+	SendStatusProgress("fetching subject schema")
 	c.VersionsBySubject(sourceSubject, versionsCh, errorCh)
 	c.SubjectConfig(sourceSubject, configCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
@@ -478,14 +479,14 @@ func (app *App) CloneSubject(sourceSubject string) {
 				received++
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to fetch subject info")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to fetch subject info: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while fetching subject info")
-				SendStatusWithDefaultTTL("[red]timeout while fetching subject info")
+				SendStatusError("[red]timeout while fetching subject info")
 				return
 			}
 		}
@@ -503,14 +504,14 @@ func (app *App) CloneSubject(sourceSubject string) {
 				schemas = append(schemas, s.Metadata.SchemaInfo)
 			case err := <-schemaErrCh:
 				log.Error().Err(err).Int("version", version).Msg("failed to fetch schema version")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to fetch schema version %d: %s", version, err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while fetching schema versions")
-				SendStatusWithDefaultTTL("[red]timeout while fetching schema versions")
+				SendStatusError("[red]timeout while fetching schema versions")
 				return
 			}
 		}
@@ -613,7 +614,7 @@ func (app *App) NewCloneSubjectModal(sourceSubject string, result *CloneSubjectR
 		if IsCtrlEnter(event) {
 			subjectName = nameField.GetText()
 			if strings.TrimSpace(subjectName) == "" {
-				SendStatusWithDefaultTTL("[red]subject name cannot be empty")
+				SendStatusError("[red]subject name cannot be empty")
 				return event
 			}
 			app.CloneSubjectResultHandler(
@@ -652,7 +653,7 @@ func (app *App) CloneSubjectResultHandler(
 	compatibility sr.Compatibility,
 ) {
 	c := app.GetCurrentSchemaRegistryClient()
-	SendStatusInfinite("registering schemas")
+	SendStatusProgress("registering schemas")
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
 	go func() {
@@ -666,13 +667,13 @@ func (app *App) CloneSubjectResultHandler(
 			case <-resultCh:
 			case err := <-errorCh:
 				log.Error().Err(err).Int("version_index", i).Msg("failed to register schema")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to register schema version %d: %s", i+1, err.Error()),
 				)
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while registering schema")
-				SendStatusWithDefaultTTL("[red]timeout while registering schema")
+				SendStatusError("[red]timeout while registering schema")
 				return
 			}
 		}
@@ -694,7 +695,7 @@ func (app *App) CloneSubjectResultHandler(
 		case <-configResultCh:
 		case err := <-configErrorCh:
 			log.Error().Err(err).Msg("failed to set subject compatibility")
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				fmt.Sprintf(
 					"[red]subject created but failed to set compatibility: %s",
 					err.Error(),
@@ -702,14 +703,10 @@ func (app *App) CloneSubjectResultHandler(
 			)
 		case <-configCtx.Done():
 			log.Error().Msg("timeout while setting subject compatibility")
-			SendStatusWithDefaultTTL("[red]subject created but timeout setting compatibility")
+			SendStatusError("[red]subject created but timeout setting compatibility")
 		}
 
-		SendStatus(
-			fmt.Sprintf("subject '%s' has been created (%d versions)", subject, len(schemas)),
-			2*time.Second,
-			false,
-		)
+		SendStatusDone(fmt.Sprintf("subject '%s' has been created (%d versions)", subject, len(schemas)))
 		Publish(SubjectsChannel, GetSubjectsEventType, Payload{nil, true})
 	}()
 }
@@ -727,7 +724,7 @@ func (app *App) DeleteSubjectResultHandler(subject string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentSchemaRegistryClient()
-	SendStatusInfinite("deleting subject")
+	SendStatusProgress("deleting subject")
 	c.DeleteSubjectVersions(subject, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -735,24 +732,20 @@ func (app *App) DeleteSubjectResultHandler(subject string) {
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(
-					fmt.Sprintf("subject '%s' has been deleted", subject),
-					2*time.Second,
-					false,
-				)
+				SendStatusDone(fmt.Sprintf("subject '%s' has been deleted", subject))
 				Publish(SubjectsChannel, GetSubjectsEventType, Payload{nil, true})
 				cancel()
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to delete subject")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to delete subject: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while deleting subject")
-				SendStatusWithDefaultTTL("[red]timeout while deleting subject")
+				SendStatusError("[red]timeout while deleting subject")
 				return
 			}
 		}
@@ -772,7 +765,7 @@ func (app *App) DeleteSubjectVersionResultHandler(subject string, version int) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentSchemaRegistryClient()
-	SendStatusInfinite("deleting version")
+	SendStatusProgress("deleting version")
 	c.DeleteVersion(subject, version, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -780,28 +773,24 @@ func (app *App) DeleteSubjectVersionResultHandler(subject string, version int) {
 		for {
 			select {
 			case <-resultCh:
-				SendStatus(
-					fmt.Sprintf(
-						"version %d of subject '%s' has been deleted",
-						version,
-						subject,
-					),
-					2*time.Second,
-					false,
-				)
+				SendStatusDone(fmt.Sprintf(
+					"version %d of subject '%s' has been deleted",
+					version,
+					subject,
+				))
 				Publish(SubjectsChannel, GetSubjectsEventType, Payload{nil, true})
 				cancel()
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to delete version")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to delete version: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while deleting version")
-				SendStatusWithDefaultTTL("[red]timeout while deleting version")
+				SendStatusError("[red]timeout while deleting version")
 				return
 			}
 		}
@@ -828,12 +817,12 @@ func (app *App) FindSchemaByIDModal() {
 		if IsCtrlEnter(event) {
 			idStr := strings.TrimSpace(input.GetText())
 			if idStr == "" {
-				SendStatusWithDefaultTTL("[red]schema ID cannot be empty")
+				SendStatusError("[red]schema ID cannot be empty")
 				return nil
 			}
 			id, err := strconv.Atoi(idStr)
 			if err != nil {
-				SendStatusWithDefaultTTL("[red]invalid schema ID")
+				SendStatusError("[red]invalid schema ID")
 				return nil
 			}
 			app.HideModalPage(FindSchemaByID)
@@ -879,7 +868,7 @@ func (app *App) SchemaByID(id int) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentSchemaRegistryClient()
-	SendStatusInfinite("getting schema by ID...")
+	SendStatusProgress("getting schema by ID...")
 	c.SchemaByID(id, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -894,7 +883,7 @@ func (app *App) SchemaByID(id int) {
 				indentErr := json.Indent(&pretty, []byte(result.Info.Schema), "", "  ")
 				if indentErr != nil {
 					log.Error().Err(indentErr).Msg("failed to format schema")
-					SendStatusWithDefaultTTL(
+					SendStatusError(
 						fmt.Sprintf("[red]failed to format schema: %s", indentErr.Error()),
 					)
 					cancel()
@@ -930,7 +919,7 @@ func (app *App) SchemaByID(id int) {
 						_, err := writer.Write([]byte(content))
 						if err != nil {
 							log.Error().Err(err).Msg("failed to write formatted schema")
-							SendStatusWithDefaultTTL(
+							SendStatusError(
 								"[red]failed to write formatted schema",
 							)
 						}
@@ -941,7 +930,7 @@ func (app *App) SchemaByID(id int) {
 						app.WithHScroll(desc, func(event *tcell.EventKey) *tcell.EventKey {
 							if IsKey(event, '1') {
 								if karatErr != nil {
-									SendStatusWithDefaultTTL(
+									SendStatusError(
 										fmt.Sprintf(
 											"[red]failed to format schema: %s",
 											karatErr.Error(),
@@ -971,14 +960,14 @@ func (app *App) SchemaByID(id int) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to get schema by ID")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to get schema by ID: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while getting schema by ID")
-				SendStatusWithDefaultTTL("[red]timeout while getting schema by ID")
+				SendStatusError("[red]timeout while getting schema by ID")
 				return
 			}
 		}

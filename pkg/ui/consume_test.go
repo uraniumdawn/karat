@@ -77,8 +77,13 @@ func TestPrepareConsume(t *testing.T) {
 		if prepared.params.Topic != "orders" {
 			t.Errorf("topic = %q, want orders", prepared.params.Topic)
 		}
-		if prepared.params.MaxCount != 100 {
-			t.Errorf("MaxCount = %d, want 100", prepared.params.MaxCount)
+		// -o 100 is a start position, not a delivery limit: a MaxCount here would stop
+		// the consumer once the backlog is drained instead of tailing live.
+		if prepared.params.MaxCount != 0 {
+			t.Errorf("MaxCount = %d, want 0", prepared.params.MaxCount)
+		}
+		if prepared.params.From != (consumer.FromSpec{Type: "tail", Offset: 100}) {
+			t.Errorf("From = %+v, want tail 100", prepared.params.From)
 		}
 		if len(prepared.params.Partitions) != 1 || prepared.params.Partitions[0] != 3 {
 			t.Errorf("Partitions = %v, want [3]", prepared.params.Partitions)
@@ -130,8 +135,8 @@ func TestDefaultConsumeParams(t *testing.T) {
 		if spec.SRName != "local" {
 			t.Errorf("SRName = %q, want local", spec.SRName)
 		}
-		if spec.Count != 100 {
-			t.Errorf("count = %d, want 100", spec.Count)
+		if spec.From != (consumer.FromSpec{Type: "tail", Offset: 100}) {
+			t.Errorf("From = %+v, want tail 100", spec.From)
 		}
 
 		// The double quotes must survive tokenizing, or the format renders as bare words.

@@ -35,7 +35,7 @@ type confirmation struct {
 func (app *App) Modify(question string, run func()) {
 	switch app.Config.Mode() {
 	case config.ReadOnly:
-		SendStatusWithDefaultTTL(refusal)
+		SendStatusNote(refusal)
 	case config.Yolo:
 		run()
 	default:
@@ -51,7 +51,7 @@ func (app *App) Modify(question string, run func()) {
 // it on a confirmation page.
 func (app *App) Allowed() bool {
 	if app.Config.Mode() == config.ReadOnly {
-		SendStatusWithDefaultTTL(refusal)
+		SendStatusNote(refusal)
 		return false
 	}
 	return true
@@ -83,7 +83,7 @@ func (app *App) answer(event *tcell.EventKey) bool {
 		pending.onYes()
 	case IsKey(event, 'n'), IsKey(event, 'N'), event.Key() == tcell.KeyEsc:
 		app.confirm = nil
-		SendStatusWithDefaultTTL("cancelled")
+		SendStatusNote("cancelled")
 	}
 
 	return true

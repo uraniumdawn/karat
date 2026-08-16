@@ -50,7 +50,7 @@ same keys on a version show the schema:
 - **Topic producers** — active producers and in-flight transactions, per partition.
 - **Hide internal topics** — `i` hides `__*`, `*-changelog` and `*-repartition`. The patterns are yours to change.
 - **Extra actions menu** — `.` opens the actions for whatever is under the cursor: on a topic, Consume, CLI commands, Producers, Consumer groups, Clone topic, Recreate topic; on a connector, pause/resume/restart; on a running connector's page, its task actions.
-- **Consumer** — kcat-style parameters: offsets, timestamps, partitions, avro/pack deserialization, output format, filter. Reading never commits: karat consumes under its own ephemeral group id, so browsing a topic cannot move anyone's offsets. `c` on the Topics list starts consuming right away with whatever you used last on that topic, `F1` shows the flag reference, and `Ctrl+O` opens the parameters in your editor with that reference inlined as comments.
+- **Consumer** — kcat-style parameters: offsets, timestamps, partitions, avro/pack deserialization, output format, filter. Reading never commits: karat consumes under its own ephemeral group id, so browsing a topic cannot move anyone's offsets. `c` on the Topics list starts consuming right away with the defaults, `F1` shows the flag reference, and `Ctrl+O` opens the parameters in your editor with that reference inlined as comments.
 - **Avro decoding** — `-d key=avro -d value=avro -r <sr-name>`. `-d` chooses what gets decoded, `-r` names the schema registry to decode it against; `-r` on its own decodes nothing. `-d avro` is the shorthand for both, so a topic with a string key wants `-d value=avro` alone. Schemas are resolved by the id carried in each payload, so a topic whose schema changed mid-stream still reads. Payloads without the Confluent magic byte fall back to raw output instead of failing.
 - **Defaults** — a topic you have never consumed starts with `-o 100 -d key=avro -d value=avro -r <sr-name> -f '{…}'`, or the same without the `-d`/`-r` when no Schema Registry is selected: the last 100 records per partition, key and value decoded when there is something to decode them with, rendered as `{"Key":…,"Value":…,"Timestamp":…,"Partition":…,"Offset":…,"Headers":…,"Size":…}` — one JSON object per line. Key and value are spelled out rather than written as the equivalent bare `-d avro`, so a string key is one deleted flag away.
 - **Parameter history** — every parameter string you actually run is kept per cluster and topic in `~/.config/karat/history.yaml` and survives restarts. `Ctrl+R` lists what you ran on this topic, newest first, and `Enter` fills it back in. Each topic keeps its own 30 entries, so a topic you consume all day does not evict what you ran on another one last week.
@@ -272,10 +272,10 @@ karat:
   #   {{srURL}}     — Schema Registry URL from the selected registry
   cli_templates:
     # kcat example - consume from beginning with JSON formatting
-    - kcat -b {{bootstrap}} -t {{topic}} -o beginning -f '{"Key":"%k","Value":%s,"Timestamp":%T,"Partition":%p,"Offset":%o,"Headers":"%h","Size":%S}\n' -u | jq .
+    - kcat -C -b {{bootstrap}} -t {{topic}} -o beginning -f '{"Key":"%k","Value":%s,"Timestamp":%T,"Partition":%p,"Offset":%o,"Headers":"%h","Size":%S}\n' -u | jq .
 
     # kcat example - consume from end (live)
-    - kcat -b {{bootstrap}} -t {{topic}}
+    - kcat -C -b {{bootstrap}} -t {{topic}}
 
     # kafka-console-consumer
     - kafka-console-consumer --bootstrap-server {{bootstrap}} --topic {{topic}} --from-beginning

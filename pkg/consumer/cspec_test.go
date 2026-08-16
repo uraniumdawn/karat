@@ -38,10 +38,9 @@ func TestParseArgs(t *testing.T) {
 	}{
 		// defaults
 		{
-			name:      "empty input defaults to tail 100",
-			input:     "",
-			wantFrom:  tail100,
-			wantCount: 100,
+			name:     "empty input defaults to tail 100",
+			input:    "",
+			wantFrom: tail100,
 		},
 		// -o flag
 		{
@@ -65,22 +64,23 @@ func TestParseArgs(t *testing.T) {
 			wantFrom: FromSpec{Type: "end"},
 		},
 		{
-			name:      "-o 50 sets tail and count",
+			// The tail start bounds the backlog on its own; a count on top of it would
+			// stop the consumer at the high-water mark, i.e. behave like -o 50 -e.
+			name:      "-o 50 sets tail start and no count",
 			input:     "-o 50",
 			wantFrom:  FromSpec{Type: "tail", Offset: 50},
-			wantCount: 50,
+			wantCount: 0,
 		},
 		{
-			name:      "-o 1 sets tail and count",
+			name:      "-o 1 sets tail start and no count",
 			input:     "-o 1",
 			wantFrom:  FromSpec{Type: "tail", Offset: 1},
-			wantCount: 1,
+			wantCount: 0,
 		},
 		{
 			name:          "no -o with other flags defaults to tail 100",
 			input:         "-e",
 			wantFrom:      tail100,
-			wantCount:     100,
 			wantExitOnEnd: true,
 		},
 		// -o zero and negative are errors
@@ -199,7 +199,6 @@ func TestParseArgs(t *testing.T) {
 			name:          "-e sets ExitOnEnd",
 			input:         "-e",
 			wantFrom:      tail100,
-			wantCount:     100,
 			wantExitOnEnd: true,
 		},
 		{
@@ -210,18 +209,16 @@ func TestParseArgs(t *testing.T) {
 		},
 		// -f format string
 		{
-			name:      "-f with escaped sequences",
-			input:     `-f %k\t%s\n`,
-			wantFrom:  tail100,
-			wantCount: 100,
-			wantFmt:   "%k\t%s\n",
+			name:     "-f with escaped sequences",
+			input:    `-f %k\t%s\n`,
+			wantFrom: tail100,
+			wantFmt:  "%k\t%s\n",
 		},
 		{
-			name:      "-f format with spaces is consumed to end of input",
-			input:     `-f %T %p %o %s`,
-			wantFrom:  tail100,
-			wantCount: 100,
-			wantFmt:   "%T %p %o %s",
+			name:     "-f format with spaces is consumed to end of input",
+			input:    `-f %T %p %o %s`,
+			wantFrom: tail100,
+			wantFmt:  "%T %p %o %s",
 		},
 		{
 			name:     "-o beginning with -f combined",
@@ -234,14 +231,12 @@ func TestParseArgs(t *testing.T) {
 			name:           "-p single partition",
 			input:          "-p 1",
 			wantFrom:       tail100,
-			wantCount:      100,
 			wantPartitions: []int32{1},
 		},
 		{
 			name:           "-p multiple partitions",
 			input:          "-p 0 -p 1",
 			wantFrom:       tail100,
-			wantCount:      100,
 			wantPartitions: []int32{0, 1},
 		},
 		{
@@ -271,7 +266,6 @@ func TestParseArgs(t *testing.T) {
 			name:            "-d avro sets both key and value",
 			input:           "-d avro",
 			wantFrom:        tail100,
-			wantCount:       100,
 			wantKeySerdes:   Serdes{Kind: SerdesAvro},
 			wantValueSerdes: Serdes{Kind: SerdesAvro},
 		},
@@ -279,21 +273,18 @@ func TestParseArgs(t *testing.T) {
 			name:          "-d key=i sets only key serdes",
 			input:         "-d key=i",
 			wantFrom:      tail100,
-			wantCount:     100,
 			wantKeySerdes: Serdes{Kind: SerdesPack, PackStr: "i"},
 		},
 		{
 			name:            "-d value=avro sets only value serdes",
 			input:           "-d value=avro",
 			wantFrom:        tail100,
-			wantCount:       100,
 			wantValueSerdes: Serdes{Kind: SerdesAvro},
 		},
 		{
 			name:            "-d key=avro -d value=>q both set independently",
 			input:           "-d key=avro -d value=>q",
 			wantFrom:        tail100,
-			wantCount:       100,
 			wantKeySerdes:   Serdes{Kind: SerdesAvro},
 			wantValueSerdes: Serdes{Kind: SerdesPack, PackStr: ">q"},
 		},
@@ -301,14 +292,12 @@ func TestParseArgs(t *testing.T) {
 			name:       "-r sets SRName",
 			input:      "-r my-sr",
 			wantFrom:   tail100,
-			wantCount:  100,
 			wantSRName: "my-sr",
 		},
 		{
 			name:            "-d avro -r my-sr combined",
 			input:           "-d avro -r my-sr",
 			wantFrom:        tail100,
-			wantCount:       100,
 			wantKeySerdes:   Serdes{Kind: SerdesAvro},
 			wantValueSerdes: Serdes{Kind: SerdesAvro},
 			wantSRName:      "my-sr",
@@ -319,7 +308,6 @@ func TestParseArgs(t *testing.T) {
 			name:       "| pattern sets filter",
 			input:      "| hello",
 			wantFrom:   tail100,
-			wantCount:  100,
 			wantFilter: "hello",
 		},
 		{
@@ -339,15 +327,13 @@ func TestParseArgs(t *testing.T) {
 			name:       "-o 50 -f with filter after format",
 			input:      "-o 50 -f '%s' | bar",
 			wantFrom:   FromSpec{Type: "tail", Offset: 50},
-			wantCount:  50,
 			wantFmt:    "%s",
 			wantFilter: "bar",
 		},
 		{
-			name:      "| with empty pattern is treated as no filter",
-			input:     "-o 100 | ",
-			wantFrom:  FromSpec{Type: "tail", Offset: 100},
-			wantCount: 100,
+			name:     "| with empty pattern is treated as no filter",
+			input:    "-o 100 | ",
+			wantFrom: FromSpec{Type: "tail", Offset: 100},
 		},
 		{name: "-d with no value returns error", input: "-d", wantError: true},
 		{name: "-d with empty key= returns error", input: "-d key=", wantError: true},

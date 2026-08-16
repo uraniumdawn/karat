@@ -92,7 +92,7 @@ func (app *App) OpenPagesKeyHandler(filteredTable *tview.Table) {
 					pageName := cell.Text
 
 					if pageName == Clusters {
-						SendStatusWithDefaultTTL("Clusters page cannot be deleted")
+						SendStatusNote("Clusters page cannot be deleted")
 						return nil
 					}
 
@@ -166,7 +166,7 @@ func (app *App) MainOperationKeyHandler() {
 		// IsPersistentPage below, for the same reason.
 		if event.Key() == tcell.KeyCtrlP || IsKey(event, ':') {
 			if app.confirmationInFront() {
-				SendStatusWithDefaultTTL("finish the open confirmation first")
+				SendStatusNote("finish the open confirmation first")
 				return nil
 			}
 		}
@@ -208,7 +208,7 @@ func (app *App) MainOperationKeyHandler() {
 					if _, ok := app.Layout.Search[currentPage]; ok {
 						app.Layout.ShowInlineSearch(currentPage)
 						app.SetFocus(app.Layout.Search[currentPage])
-						SendStatusWithDefaultTTL("")
+						SendStatusNote("")
 						return nil
 					}
 				}

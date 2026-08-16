@@ -27,24 +27,26 @@ const (
 )
 
 // TransactionsChannel is the channel for transaction events.
-var TransactionsChannel = make(chan Event)
+var TransactionsChannel = NewEventChannel()
 
 // RunTransactionsEventHandler processes transaction events from the channel.
-func (app *App) RunTransactionsEventHandler(ctx context.Context, in chan Event) {
+func (app *App) RunTransactionsEventHandler(ctx context.Context, in *EventChannel) {
+	in.Run(ctx)
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				log.Debug().Msg("shutting down transactions event handler")
 				return
-			case event := <-in:
+			case event := <-in.C:
 				switch event.Type {
 				case GetTransactionsEventType:
 					pageName := util.BuildPageKey(app.Selected.Cluster.Name, Transactions)
 					force := event.Payload.Force
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.Transactions()
 					}
@@ -55,7 +57,7 @@ func (app *App) RunTransactionsEventHandler(ctx context.Context, in chan Event) 
 					pageName := util.BuildPageKey(app.Selected.Cluster.Name, Transaction, txnID)
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.Transaction(txnID)
 					}
@@ -69,11 +71,11 @@ func (app *App) RunTransactionsEventHandler(ctx context.Context, in chan Event) 
 func (app *App) Transactions() {
 	fc := app.GetCurrentFranzClient()
 	if fc == nil {
-		SendStatusWithDefaultTTL("[red]transactions view requires franz-go connectivity for this cluster")
+		SendStatusError("[red]transactions view requires franz-go connectivity for this cluster")
 		return
 	}
 
-	SendStatusInfinite("getting transactions")
+	SendStatusProgress("getting transactions")
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
 	go func() {
@@ -81,7 +83,7 @@ func (app *App) Transactions() {
 		txns, err := fc.ListTransactions(ctx)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to list transactions")
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				fmt.Sprintf("[red]%s", err.Error()),
 			)
 			return
@@ -164,14 +166,14 @@ func (app *App) Transactions() {
 func (app *App) Transaction(txnID string) {
 	fc := app.GetCurrentFranzClient()
 	if fc == nil {
-		SendStatusWithDefaultTTL("[red]transactions view requires franz-go connectivity for this cluster")
+		SendStatusError("[red]transactions view requires franz-go connectivity for this cluster")
 		return
 	}
 
 	pageKey := util.BuildPageKey(app.Selected.Cluster.Name, Transaction, txnID)
 	autoRefreshing := app.GetAutoUpdateLabel(pageKey) != ""
 	if !autoRefreshing {
-		SendStatusInfinite("getting transaction description")
+		SendStatusProgress("getting transaction description")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -180,7 +182,7 @@ func (app *App) Transaction(txnID string) {
 		detail, err := fc.DescribeTransaction(ctx, txnID)
 		if err != nil {
 			log.Error().Err(err).Str("txn", txnID).Msg("failed to describe transaction")
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				fmt.Sprintf("[red]failed to describe transaction: %s", err.Error()),
 			)
 			return

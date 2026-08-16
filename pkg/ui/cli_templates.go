@@ -38,7 +38,7 @@ func (app *App) CliTemplates(topicName string) {
 
 	bootstrap := app.Selected.Cluster.GetBootstrapServers()
 	if bootstrap == "" {
-		SendStatusWithDefaultTTL("[red]bootstrap.servers not found in cluster config")
+		SendStatusError("[red]bootstrap.servers not found in cluster config")
 		return
 	}
 
@@ -46,7 +46,7 @@ func (app *App) CliTemplates(topicName string) {
 
 	for i, templateCmd := range app.Config.Karat.CliTemplates {
 		if strings.Contains(templateCmd, "{{srURL}}") && srURL == "" {
-			SendStatusWithDefaultTTL(
+			SendStatusError(
 				"[red]template uses {{srURL}} but no Schema Registry is selected",
 			)
 			return
@@ -70,7 +70,7 @@ func (app *App) CliTemplates(topicName string) {
 				err := clipboard.WriteAll(command)
 				if err != nil {
 					log.Error().Err(err).Send()
-					SendStatusWithDefaultTTL(
+					SendStatusError(
 						fmt.Sprintf("[red]failed to copy to clipboard: %s", err.Error()),
 					)
 				}
@@ -106,17 +106,33 @@ func (app *App) schemaRegistryURL() string {
 	return ""
 }
 
+// requestSignal asks the running process for a signal, and reports whether the request was
+// taken. It never blocks: it runs on the UI goroutine, and the goroutine reading sig is gone
+// once the process has exited — a blocking send there freezes the application with no way out.
+//
+// A refused request means one is already queued. shell.Execute acts on the first signal it
+// receives and ignores the rest, so nothing is lost by dropping it.
+func requestSignal(sig chan syscall.Signal, s syscall.Signal) bool {
+	select {
+	case sig <- s:
+		return true
+	default:
+		SendStatusDone("a stop has already been requested")
+		return false
+	}
+}
+
 func (app *App) ExecuteCliCommand(topicName, commandTemplate string) {
 	bootstrap := app.Selected.Cluster.GetBootstrapServers()
 	if bootstrap == "" {
-		SendStatusWithDefaultTTL("[red]bootstrap servers not configured")
+		SendStatusError("[red]bootstrap servers not configured")
 		log.Error().Msg("bootstrap servers not configured")
 		return
 	}
 
 	srURL := app.schemaRegistryURL()
 	if strings.Contains(commandTemplate, "{{srURL}}") && srURL == "" {
-		SendStatusWithDefaultTTL("[red]template uses {{srURL}} but no Schema Registry is selected")
+		SendStatusError("[red]template uses {{srURL}} but no Schema Registry is selected")
 		return
 	}
 
@@ -127,16 +143,17 @@ func (app *App) ExecuteCliCommand(topicName, commandTemplate string) {
 	sig := make(chan syscall.Signal, 1)
 	processDone := make(chan int, 1)
 
+	// No SetChangedFunc: every write to this view already happens inside a QueueUpdateDraw,
+	// which redraws. A changed handler calling Draw would queue a second, redundant update —
+	// tview runs the handler on a goroutine of its own, so each one is a goroutine parked in
+	// QueueUpdate for as long as the UI goroutine is busy.
 	view := tview.NewTextView().
 		SetTextAlign(tview.AlignLeft).
 		SetDynamicColors(true).
 		SetWrap(true).
 		SetWordWrap(true).
 		SetMaxLines(1000).
-		SetScrollable(true).
-		SetChangedFunc(func() {
-			app.Draw()
-		})
+		SetScrollable(true)
 
 	view.SetBorder(true).
 		SetBorderPadding(0, 0, 1, 0)
@@ -168,6 +185,10 @@ func (app *App) ExecuteCliCommand(topicName, commandTemplate string) {
 
 	app.AddToPagesRegistry(pageName, view, CliExecutePageMenu, false)
 
+	// The command is an operation in flight, so it takes the spinner and stands until it is
+	// over: the exit-code message sent when the process terminates replaces it.
+	SendStatusProgress("command executing")
+
 	spinnerIndex := 0
 	var isProcessActive int32 = 1 // 1 = active, 0 = inactive
 
@@ -192,27 +213,31 @@ func (app *App) ExecuteCliCommand(topicName, commandTemplate string) {
 	view.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if IsKey(event, 't') {
 			if atomic.LoadInt32(&isProcessActive) == 0 {
-				SendStatus("process already finished", 2*time.Second, false)
+				SendStatusDone("process already finished")
 				return nil
 			}
-			sig <- syscall.SIGTERM
-			SendStatusInfinite("stopping execution")
+			if !requestSignal(sig, syscall.SIGTERM) {
+				return nil
+			}
+			SendStatusProgress("stopping execution")
 			return nil
 		}
 		if event.Key() == tcell.KeyCtrlK {
 			if atomic.LoadInt32(&isProcessActive) == 0 {
-				SendStatus("process already finished", 2*time.Second, false)
+				SendStatusDone("process already finished")
 				return nil
 			}
-			sig <- syscall.SIGKILL
-			SendStatusInfinite("killing process")
+			if !requestSignal(sig, syscall.SIGKILL) {
+				return nil
+			}
+			SendStatusProgress("killing process")
 			return nil
 		}
 		// <x> closes the page, the same key the opened-pages modal uses. <C-d> is reserved for
 		// deleting things in Kafka and must not also mean "close this".
 		if IsKey(event, 'x') {
 			if atomic.LoadInt32(&isProcessActive) == 1 {
-				SendStatus("process in not finished yet", 2*time.Second, false)
+				SendStatusDone("process in not finished yet")
 				return nil
 			}
 			app.RemoveFromPagesRegistry(pageName)
@@ -256,7 +281,7 @@ func (app *App) ExecuteCliCommand(topicName, commandTemplate string) {
 					errChClosed = true
 					continue
 				}
-				SendStatusInfinite(errMsg)
+				SendStatusProgress(errMsg)
 
 			case exitCode = <-processDone:
 				processDoneReceived = true
@@ -272,30 +297,18 @@ func (app *App) ExecuteCliCommand(topicName, commandTemplate string) {
 		// Show final status message based on exit code
 		switch {
 		case exitCode == 0:
-			SendStatus(
-				"process completed successfully (exit code 0)",
-				2*time.Second,
-				false,
-			)
+			SendStatusDone("process completed successfully (exit code 0)")
 		case exitCode == 143: // 128 + 15 (SIGTERM)
-			SendStatus("process stopped gracefully (SIGTERM)", 2*time.Second, false)
+			SendStatusDone("process stopped gracefully (SIGTERM)")
 		case exitCode == 137: // 128 + 9 (SIGKILL)
-			SendStatus("process killed (SIGKILL)", 2*time.Second, false)
+			SendStatusDone("process killed (SIGKILL)")
 		case exitCode >= 128:
 			// Killed by other signal
 			signal := exitCode - 128
-			SendStatus(
-				fmt.Sprintf("process killed by signal %d", signal),
-				2*time.Second,
-				false,
-			)
+			SendStatusDone(fmt.Sprintf("process killed by signal %d", signal))
 		default:
 			// Process error (exit code 1-127)
-			SendStatus(
-				fmt.Sprintf("process failed with exit code %d", exitCode),
-				2*time.Second,
-				false,
-			)
+			SendStatusDone(fmt.Sprintf("process failed with exit code %d", exitCode))
 		}
 	}()
 }

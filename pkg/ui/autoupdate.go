@@ -93,7 +93,7 @@ func (app *App) CycleIntervalForCurrentPage() {
 	fn := entry.refreshFn
 	app.autoUpdateMu.Unlock()
 
-	SendStatus("auto-update", 0, true)
+	SendStatusProgress("auto-update")
 	fn()
 
 	go func() {

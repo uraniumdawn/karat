@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.3.2] - 2026-08-16
+
+Code improvements and application stability: the freezes reported across the list, connector and consume pages are fixed, along with the data races behind them.
+
 ## [0.3.1] - 2026-08-16
 
 ## Features

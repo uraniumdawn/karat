@@ -27,7 +27,7 @@ const (
 )
 
 // NodesChannel is the channel for node events.
-var NodesChannel = make(chan Event)
+var NodesChannel = NewEventChannel()
 
 // NodeIDURLPair represents a node ID and URL pair.
 type NodeIDURLPair struct {
@@ -36,21 +36,23 @@ type NodeIDURLPair struct {
 }
 
 // RunNodesEventHandler processes node events from the channel.
-func (app *App) RunNodesEventHandler(ctx context.Context, in chan Event) {
+func (app *App) RunNodesEventHandler(ctx context.Context, in *EventChannel) {
+	in.Run(ctx)
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				log.Debug().Msg("shutting down nodes event handler")
 				return
-			case event := <-in:
+			case event := <-in.C:
 				switch event.Type {
 				case GetNodesEventType:
 					pageName := util.BuildPageKey(app.Selected.Cluster.Name, Nodes)
 					force := event.Payload.Force
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.Nodes()
 					}
@@ -62,7 +64,7 @@ func (app *App) RunNodesEventHandler(ctx context.Context, in chan Event) {
 					pageName := util.BuildPageKey(app.Selected.Cluster.Name, Nodes, nodeID)
 					_, found := app.Cache.Get(pageName)
 					if found && !force {
-						app.SwitchToPage(pageName)
+						app.QueueUpdateDraw(func() { app.SwitchToPage(pageName) })
 					} else {
 						app.Node(nodeID, url)
 					}
@@ -78,7 +80,7 @@ func (app *App) Nodes() {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("getting nodes...")
+	SendStatusProgress("getting nodes...")
 	c.DescribeCluster(resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -119,14 +121,14 @@ func (app *App) Nodes() {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to describe cluster")
-				SendStatusWithDefaultTTL(
+				SendStatusError(
 					fmt.Sprintf("[red]failed to describe cluster: %s", err.Error()),
 				)
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while describing cluster")
-				SendStatusWithDefaultTTL("[red]timeout while describing cluster")
+				SendStatusError("[red]timeout while describing cluster")
 				return
 			}
 		}
@@ -139,7 +141,7 @@ func (app *App) Node(id, url string) {
 	errorCh := make(chan error)
 
 	c := app.GetCurrentKafkaClient()
-	SendStatusInfinite("getting node description")
+	SendStatusProgress("getting node description")
 	c.DescribeNode(id, resultCh, errorCh)
 	ctx, cancel := context.WithTimeout(context.Background(), app.Config.GetAPICallTimeout())
 
@@ -171,12 +173,12 @@ func (app *App) Node(id, url string) {
 				return
 			case err := <-errorCh:
 				log.Error().Err(err).Msg("failed to describe node")
-				SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to describe node: %s", err.Error()))
+				SendStatusError(fmt.Sprintf("[red]failed to describe node: %s", err.Error()))
 				cancel()
 				return
 			case <-ctx.Done():
 				log.Error().Msg("timeout while describing node")
-				SendStatusWithDefaultTTL("[red]timeout while describing node")
+				SendStatusError("[red]timeout while describing node")
 				return
 			}
 		}

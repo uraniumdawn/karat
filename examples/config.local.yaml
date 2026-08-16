@@ -37,7 +37,7 @@ karat:
       url: http://127.0.0.1:8083
       selected: true
   cli_templates:
-    - kcat -b {{bootstrap}} -r {{srURL}} -t {{topic}} -o beginning -f
+    - kcat -C -b {{bootstrap}} -r {{srURL}} -t {{topic}} -o beginning -f
       '{"Key":"%k","Value":%s,"Timestamp":%T,"Partition":%p,"Offset":%o,"Headers":"%h","Size":%S}\n'
       -u | jq .
-    - kcat -b {{bootstrap}} -t {{topic}}
+    - kcat -C -b {{bootstrap}} -t {{topic}}

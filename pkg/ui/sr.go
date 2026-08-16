@@ -20,17 +20,19 @@ const (
 )
 
 // SchemaRegistriesChannel is the channel for schema registry events.
-var SchemaRegistriesChannel = make(chan Event)
+var SchemaRegistriesChannel = NewEventChannel()
 
 // RunSchemaRegistriesEventHandler processes schema registry events from the channel.
-func (app *App) RunSchemaRegistriesEventHandler(ctx context.Context, in chan Event) {
+func (app *App) RunSchemaRegistriesEventHandler(ctx context.Context, in *EventChannel) {
+	in.Run(ctx)
+
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				log.Debug().Msg("shutting down schema-registries event handler")
 				return
-			case event := <-in:
+			case event := <-in.C:
 				switch event.Type {
 				case GetSchemaRegistriesEventType:
 					app.QueueUpdateDraw(func() {

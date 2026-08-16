@@ -37,12 +37,12 @@ func modeColor(mode config.Mode) tcell.Color {
 // says so in one place instead of leaving it to be inferred from three.
 func (app *App) cycleMode() {
 	if app.confirmationInFront() {
-		SendStatusWithDefaultTTL("finish the open confirmation first")
+		SendStatusNote("finish the open confirmation first")
 		return
 	}
 
 	app.Config.SetMode(config.NextMode(app.Config.Mode()))
 	if err := app.Config.Save(); err != nil {
-		SendStatusWithDefaultTTL(fmt.Sprintf("[red]failed to save config: %s", err.Error()))
+		SendStatusError(fmt.Sprintf("[red]failed to save config: %s", err.Error()))
 	}
 }
