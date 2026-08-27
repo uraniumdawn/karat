@@ -143,6 +143,14 @@ func (app *App) Subjects() {
 							)
 						}
 
+						if event.Key() == tcell.KeyCtrlD {
+							subject, ok := selectedName(table, afterHeaderRow)
+							if !ok {
+								return nil
+							}
+							app.DeleteSubjectConfirm(subject)
+						}
+
 						if IsKey(event, '.') {
 							subject, ok := selectedName(table, afterHeaderRow)
 							if !ok {
@@ -236,15 +244,19 @@ func (app *App) Versions(subject string) {
 								Payload{SubjectVersionPair{subject, version}, false})
 						}
 
-						if IsKey(event, '.') {
+						if event.Key() == tcell.KeyCtrlD {
 							version, ok := selectedName(table, afterHeaderRow)
 							if !ok {
 								return nil
 							}
-							app.ShowExtraActions(
-								VersionsExtraActions,
-								subject+"\x00"+version,
-							)
+							number, err := strconv.Atoi(version)
+							if err != nil {
+								SendStatusError(
+									"[red]cannot read the version under the cursor",
+								)
+								return nil
+							}
+							app.DeleteSubjectVersionConfirm(subject, number)
 						}
 
 						return event

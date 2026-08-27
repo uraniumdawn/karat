@@ -5,9 +5,6 @@
 package ui
 
 import (
-	"strconv"
-	"strings"
-
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
@@ -29,9 +26,6 @@ const (
 	// SubjectsExtraActions is the registry key for extra actions available from the
 	// subjects list page.
 	SubjectsExtraActions = "subjects"
-	// VersionsExtraActions is the registry key for extra actions available from the
-	// subject versions page.
-	VersionsExtraActions = "versions"
 )
 
 // ExtraAction describes a single entry in the "Extra Actions" modal.
@@ -132,23 +126,6 @@ var extraActionsRegistry = map[string][]ExtraAction{
 					return
 				}
 				app.CloneSubject(ctx)
-			},
-		},
-		{
-			Name: "Delete subject",
-			Run: func(app *App, ctx string) {
-				app.DeleteSubjectConfirm(ctx)
-			},
-		},
-	},
-	VersionsExtraActions: {
-		{
-			Name: "Delete version",
-			Run: func(app *App, ctx string) {
-				parts := strings.SplitN(ctx, "\x00", 2)
-				subject := parts[0]
-				version, _ := strconv.Atoi(parts[1])
-				app.DeleteSubjectVersionConfirm(subject, version)
 			},
 		},
 	},

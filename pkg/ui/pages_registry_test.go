@@ -168,7 +168,7 @@ func TestTransientPageStaysOutOfTheRegistry(t *testing.T) {
 
 	app.AddToPagesRegistry("Topics", tview.NewTable(), TopicsPageMenu, false)
 	app.AddToPagesRegistry("Topic", tview.NewTextView(), TopicDecriptionPageMenu, false)
-	app.AddTransientPage(TopicConfirm, tview.NewTextView(), TopicConfirmPageMenu)
+	app.addTransientPage(TopicConfirm, tview.NewTextView())
 
 	if got, _ := registry.UI.Pages.GetFrontPage(); got != TopicConfirm {
 		t.Fatalf("front page = %q, want the confirmation page %q", got, TopicConfirm)
@@ -187,7 +187,7 @@ func TestTransientPageStaysOutOfTheRegistry(t *testing.T) {
 		t.Errorf("after h/l the front page = %q, want %q", got, TopicConfirm)
 	}
 
-	app.RemoveTransientPage(TopicConfirm)
+	app.removeTransientPage(TopicConfirm)
 
 	if got, _ := registry.UI.Pages.GetFrontPage(); got != "Topic" {
 		t.Errorf("after dismissal the front page = %q, want the page it opened from %q", got, "Topic")
@@ -211,8 +211,8 @@ func TestTransientPageDoesNotDisturbNavigation(t *testing.T) {
 
 	app.AddToPagesRegistry("Topics", tview.NewTable(), TopicsPageMenu, false)
 	app.AddToPagesRegistry("Topic", tview.NewTextView(), TopicDecriptionPageMenu, false)
-	app.AddTransientPage(TopicConfirm, tview.NewTextView(), TopicConfirmPageMenu)
-	app.RemoveTransientPage(TopicConfirm)
+	app.addTransientPage(TopicConfirm, tview.NewTextView())
+	app.removeTransientPage(TopicConfirm)
 
 	app.Backward()
 	if got, _ := registry.UI.Pages.GetFrontPage(); got != "Topics" {
@@ -277,7 +277,7 @@ func TestConfirmationPageBlocksPageSwitching(t *testing.T) {
 		t.Fatal("a list page is reported as a confirmation")
 	}
 
-	app.AddTransientPage(TopicConfirm, tview.NewTextView(), TopicConfirmPageMenu)
+	app.addTransientPage(TopicConfirm, tview.NewTextView())
 
 	if !registry.IsTransientPage(TopicConfirm) {
 		t.Error("the confirmation page is not marked transient")
@@ -286,7 +286,7 @@ func TestConfirmationPageBlocksPageSwitching(t *testing.T) {
 		t.Error("a confirmation page in front is not reported as one")
 	}
 
-	app.RemoveTransientPage(TopicConfirm)
+	app.removeTransientPage(TopicConfirm)
 
 	if registry.IsTransientPage(TopicConfirm) {
 		t.Error("the confirmation page stayed marked transient after its dismissal")

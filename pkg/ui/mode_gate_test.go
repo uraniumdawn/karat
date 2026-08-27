@@ -109,7 +109,7 @@ func TestConfirmationPageBlocksTheWayToTheModeSwitch(t *testing.T) {
 	}
 	app.HideModalPage(Resources)
 
-	app.AddTransientPage(TopicConfirm, tview.NewTextView(), TopicConfirmPageMenu)
+	app.addTransientPage(TopicConfirm, tview.NewTextView())
 
 	capture(resources)
 	if front() != TopicConfirm {
@@ -120,7 +120,7 @@ func TestConfirmationPageBlocksTheWayToTheModeSwitch(t *testing.T) {
 		t.Errorf("the opened-pages modal opened from a confirmation page: front is %q", front())
 	}
 
-	app.RemoveTransientPage(TopicConfirm)
+	app.removeTransientPage(TopicConfirm)
 
 	capture(resources)
 	if front() != Resources {

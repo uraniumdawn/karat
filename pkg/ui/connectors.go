@@ -696,7 +696,8 @@ func (app *App) openEditorForConfig(name string, config map[string]interface{}) 
 	app.ConnectorConfigConfirm(name, newConfig)
 }
 
-// ConnectorConfigConfirm shows a confirmation modal with the new connector config.
+// ConnectorConfigConfirm shows the new connector config and applies it once the question in the
+// status line is answered.
 func (app *App) ConnectorConfigConfirm(name string, newConfig map[string]interface{}) {
 	prettyJSON, err := json.MarshalIndent(newConfig, "", "    ")
 	if err != nil {
@@ -704,36 +705,12 @@ func (app *App) ConnectorConfigConfirm(name string, newConfig map[string]interfa
 		return
 	}
 
-	messageText := tview.NewTextView().
-		SetText(string(prettyJSON)).
-		SetTextAlign(tview.AlignLeft).
-		SetDynamicColors(false)
-
-	messageText.SetBorder(true).
-		SetTitle(fmt.Sprintf(" Confirm Config Update: %s ", name)).
-		SetBorderPadding(0, 0, 1, 1)
-
-	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if IsCtrlEnter(event) {
-			// Re-checked at apply time: the mode can have been toggled while the page stood
-			// open. The page itself is the confirmation, so nothing more is asked.
-			if !app.Allowed() {
-				return nil
-			}
-			app.UpdateConnectorConfig(name, newConfig)
-			app.RemoveTransientPage(ConnectorConfigConfirm)
-			return nil
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.RemoveTransientPage(ConnectorConfigConfirm)
-			return nil
-		}
-
-		return event
-	})
-
-	app.AddTransientPage(ConnectorConfigConfirm, messageText, ConnectorConfigEditPageMenu)
+	app.ConfirmPage(
+		ConnectorConfigConfirm,
+		newConfirmView(fmt.Sprintf(" Confirm Config Update: %s ", name), string(prettyJSON)),
+		fmt.Sprintf("apply this config to connector '%s'?", name),
+		func() { app.UpdateConnectorConfig(name, newConfig) },
+	)
 }
 
 // UpdateConnectorConfig applies the updated connector config.
@@ -808,7 +785,8 @@ func (app *App) openEditorForNewConnector() {
 	app.ConnectorCreateConfirm(req.Name, req.Config)
 }
 
-// ConnectorCreateConfirm shows a confirmation modal before creating the connector.
+// ConnectorCreateConfirm shows the new connector config and creates it once the question in the
+// status line is answered.
 func (app *App) ConnectorCreateConfirm(name string, config map[string]interface{}) {
 	prettyJSON, err := json.MarshalIndent(config, "", "    ")
 	if err != nil {
@@ -816,36 +794,12 @@ func (app *App) ConnectorCreateConfirm(name string, config map[string]interface{
 		return
 	}
 
-	messageText := tview.NewTextView().
-		SetText(string(prettyJSON)).
-		SetTextAlign(tview.AlignLeft).
-		SetDynamicColors(false)
-
-	messageText.SetBorder(true).
-		SetTitle(fmt.Sprintf(" Confirm Create: %s ", name)).
-		SetBorderPadding(0, 0, 1, 1)
-
-	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if IsCtrlEnter(event) {
-			// Re-checked at apply time: the mode can have been toggled while the page stood
-			// open. The page itself is the confirmation, so nothing more is asked.
-			if !app.Allowed() {
-				return nil
-			}
-			app.CreateConnectorResultHandler(name, config)
-			app.RemoveTransientPage(CreateConnector)
-			return nil
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.RemoveTransientPage(CreateConnector)
-			return nil
-		}
-
-		return event
-	})
-
-	app.AddTransientPage(CreateConnector, messageText, CreateConnectorPageMenu)
+	app.ConfirmPage(
+		CreateConnector,
+		newConfirmView(fmt.Sprintf(" Confirm Create: %s ", name), string(prettyJSON)),
+		fmt.Sprintf("create connector '%s'?", name),
+		func() { app.CreateConnectorResultHandler(name, config) },
+	)
 }
 
 // CreateConnectorResultHandler submits the new connector to Kafka Connect.
@@ -1049,7 +1003,7 @@ func (app *App) buildConnectorOffsetsModal(name, state string, offsets []connect
 				return nil
 			}
 			// <y> yanks, leaving <c> to mean "consume" wherever it appears.
-			if IsKey(event, 'y') {
+			if IsKey(event, 'n') {
 				if !app.Allowed() {
 					return event
 				}
@@ -1389,7 +1343,7 @@ func (app *App) CopyConnectorOffsetsModal(connectorName string, offsets []connec
 
 	mainFlex := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(input, 1, 0, true)
-	mainFlex.SetTitle(fmt.Sprintf(" Copy Offsets: %s ", connectorName))
+	mainFlex.SetTitle(fmt.Sprintf(" Clone Offsets: %s ", connectorName))
 	mainFlex.SetBorder(true)
 	mainFlex.SetBorderPadding(0, 0, 1, 0)
 

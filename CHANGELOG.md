@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.3.3] - 2026-09-05
+
+## Enhancements
+
+* **Auto-update counts down to the next refresh.** The title indicator said which interval was picked and nothing else, and since the title is only rebuilt when a refresh happens, there was no way to tell how long the wait was: ` topic:orders [↺5s 3s] [2026-08-27T12:04:11] ` now reads as the interval, then the whole seconds left. A one-second interval keeps the bare `[↺1s]`, having nothing to count.
+* **One way to answer a question.** The four review pages — a topic being created or changed, consumer group offsets, a connector's config, a new connector — were applied with `Ctrl+Enter`, a key nothing else in karat means "yes" with. The page stays where it is, with the change on it, and the question moved to the status line where every other confirmation already lives: `apply these changes to topic 'orders'? [Y/N]`. `Y` applies, `N` and `Esc` abandon, the page comes down either way, and the keys that scroll a change longer than the terminal still reach it. `Ctrl+Enter` on those four pages is gone rather than kept as an alias. Forms with a field you type into keep it: there `Enter` is a newline, which is what the modifier is for.
+* **A question is answered with a shifted key.** `y` and `n` answered as readily as `Y` and `N` did, on questions that delete a topic or commit an offset. Only the uppercase pair answers now — the lowercase one is ignored like any other key while the question stands, and `Esc` still abandons.
+* **One key per act, wherever the act is simple.** karat teaches `n` for new, `Ctrl+D` for delete and `e` for edit, and an audit of every mutating operation found three places that did not keep the promise. Deleting a subject and deleting a schema version had no key at all — only an Extra Actions entry — and are now `Ctrl+D`, like every other delete; the entries are gone, so there is one route rather than two. Cloning connector offsets onto another connector was `y` and read as `Copy Offsets`, which is what `y` means everywhere else in karat — the clipboard — and not what it did. It is `<n> Clone Offsets` now, and `y` means clipboard and nothing else. Clone topic, clone subject, clone consumer group and recreate topic stay in Extra Actions on purpose — the first three are compound and the last destroys data, so the slower route there is the point.
+* **The keybinding bar carries the answer to a `[Y/N]` question.** A standing question consumes every keypress, so every binding the bar advertised did nothing until it was answered. While one stands the bar reads `<Y> Yes  <N/Esc> Cancel` — `Esc` abandons the question too and had nowhere saying so — and goes back to the bindings of the page underneath however the question is answered, even if that page was rebuilt by a background refresh in the meantime.
+
+## Fixes
+
+* **The connector offsets bar no longer offers a move that does not exist.** It advertised `<hjkl> Move` over a view with nothing to select and nothing to step through — the offsets are read as one block of text. The entry is gone; scrolling a longer list still works with the keys tview scrolls a description with.
+* **Environment variables in `cli_templates` stay as written.** The user config was expanded before it was parsed, so a template naming `${SASL_PASSWORD}` was displayed, copied and run with the password itself in it. Templates are now taken from the config as typed and left to the shell, which expands them when the command runs: the command on screen is the portable one, and `y` yanks something that can be pasted elsewhere. A `$` that was never a variable — a jq filter's `$value` — survives for the same reason. Everything karat reads as a value rather than as text for a shell is expanded as before.
+
 ## [0.3.2] - 2026-08-16
 
 Code improvements and application stability: the freezes reported across the list, connector and consume pages are fixed, along with the data races behind them.

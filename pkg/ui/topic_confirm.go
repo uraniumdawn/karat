@@ -9,9 +9,6 @@ import (
 	"maps"
 	"slices"
 	"strings"
-
-	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
 )
 
 // topicChange is what an edited topic document would do to an existing topic: the config
@@ -99,12 +96,16 @@ func renderNewTopic(params TopicParams) string {
 	return b.String()
 }
 
-// CreateTopicConfirm shows what the edited document would create and creates it on
-// Ctrl+Enter. Must be called from the UI goroutine.
+// CreateTopicConfirm shows what the edited document would create and creates it once the
+// question in the status line is answered. Must be called from the UI goroutine.
 func (app *App) CreateTopicConfirm(params TopicParams) {
-	app.topicConfirmPage(
-		fmt.Sprintf(" Confirm Create Topic: %s ", params.TopicName),
-		renderNewTopic(params),
+	app.ConfirmPage(
+		TopicConfirm,
+		newConfirmView(
+			fmt.Sprintf(" Confirm Create Topic: %s ", params.TopicName),
+			renderNewTopic(params),
+		),
+		fmt.Sprintf("create topic '%s'?", params.TopicName),
 		func() {
 			app.CreateTopicResultHandler(
 				params.TopicName,
@@ -116,18 +117,22 @@ func (app *App) CreateTopicConfirm(params TopicParams) {
 	)
 }
 
-// UpdateTopicConfirm shows what the edited document would change and applies it on
-// Ctrl+Enter. A document that changes nothing opens no page at all. Must be called from
-// the UI goroutine.
+// UpdateTopicConfirm shows what the edited document would change and applies it once the
+// question in the status line is answered. A document that changes nothing opens no page at
+// all. Must be called from the UI goroutine.
 func (app *App) UpdateTopicConfirm(change topicChange) {
 	if change.empty() {
 		SendStatusNote("no changes detected")
 		return
 	}
 
-	app.topicConfirmPage(
-		fmt.Sprintf(" Confirm Topic Update: %s ", change.Name),
-		renderTopicChanges(change),
+	app.ConfirmPage(
+		TopicConfirm,
+		newConfirmView(
+			fmt.Sprintf(" Confirm Topic Update: %s ", change.Name),
+			renderTopicChanges(change),
+		),
+		fmt.Sprintf("apply these changes to topic '%s'?", change.Name),
 		func() {
 			// No refresh here: the update is asynchronous, and the handler publishes a
 			// forced one once the cluster has actually been changed.
@@ -140,41 +145,4 @@ func (app *App) UpdateTopicConfirm(change topicChange) {
 			)
 		},
 	)
-}
-
-// topicConfirmPage is the confirmation page both topic document flows end on: apply is
-// deliberate, and nothing has touched the cluster until it happens. The read-only check is
-// repeated here because the cluster can be switched while the editor holds the terminal.
-func (app *App) topicConfirmPage(title, body string, apply func()) {
-	messageText := tview.NewTextView().
-		SetText(body).
-		SetTextAlign(tview.AlignLeft).
-		SetDynamicColors(false)
-
-	messageText.SetBorder(true).
-		SetTitle(title).
-		SetBorderPadding(0, 0, 1, 1)
-
-	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if IsCtrlEnter(event) {
-			// Re-checked at apply time: the mode can have been toggled while the page stood
-			// open. The page itself is the confirmation, so nothing more is asked.
-			if !app.Allowed() {
-				return nil
-			}
-			apply()
-			app.RemoveTransientPage(TopicConfirm)
-			return nil
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.RemoveTransientPage(TopicConfirm)
-			return nil
-		}
-
-		return event
-	})
-
-	ClearStatus()
-	app.AddTransientPage(TopicConfirm, messageText, TopicConfirmPageMenu)
 }

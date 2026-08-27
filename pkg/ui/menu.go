@@ -18,6 +18,10 @@ type Menu struct {
 	Flex    *tview.Flex
 	Map     *map[string]*[]string
 	Colors  *config.ColorConfig
+	// current is the page menu last asked for, painted or not, so that Unpin can put back
+	// whatever was standing before Pin - including a menu set while the bar was pinned.
+	current string
+	pinned  bool
 }
 
 // Pair holds a keybinding's display key and description.
@@ -29,10 +33,6 @@ type Pair struct {
 var keys = map[string]Pair{
 	"sel": {
 		Key:   "<j/↓,k/↑>",
-		Value: "Move",
-	},
-	"hjkl": {
-		Key:   "<hjkl>",
 		Value: "Move",
 	},
 	"forward": {
@@ -129,9 +129,17 @@ var keys = map[string]Pair{
 		Key:   "<C-d>",
 		Value: "Delete Offsets",
 	},
-	"copy_offsets": {
-		Key:   "<y>",
-		Value: "Copy Offsets",
+	"clone_offsets": {
+		Key:   "<n>",
+		Value: "Clone Offsets",
+	},
+	"delete_subj": {
+		Key:   "<C-d>",
+		Value: "Delete Subject",
+	},
+	"delete_ver": {
+		Key:   "<C-d>",
+		Value: "Delete Version",
 	},
 	"edit_topic": {
 		Key:   "<e>",
@@ -140,6 +148,16 @@ var keys = map[string]Pair{
 	"submit_ctrl": {
 		Key:   "<C-Enter>",
 		Value: "Submit",
+	},
+	"answer_yes": {
+		Key:   "<Y>",
+		Value: "Yes",
+	},
+	// <N> and <Esc> are one action, so they are one entry. The alternative — a single
+	// <Y/N/Esc> over Yes/No/Cancel — leaves the reader pairing two lists by position.
+	"answer_no": {
+		Key:   "<N/Esc>",
+		Value: "Cancel",
 	},
 	"reset_offset": {
 		Key:   "<e/E>",
@@ -278,14 +296,13 @@ var keys = map[string]Pair{
 // Page menu identifiers, used as keys into the map passed to NewMenu to look up
 // the keybindings shown for the currently active page.
 const (
+	ConfirmationMenu                    = "ConfirmationMenu"
 	ResourcesPageMenu                   = "ResourcesPageMenu"
 	OpenedPagesMenu                     = "OpenedPagesMenu"
 	ClustersPageMenu                    = "ClustersPageMenu"
 	SchemaRegistriesPageMenu            = "SchemaRegistriesPageMenu"
 	NodesPageMenu                       = "NodesPageMenu"
 	TopicsPageMenu                      = "TopicsPageMenu"
-	OffsetsConfirmPageMenu              = "OffsetsConfirmPageMenu"
-	TopicConfirmPageMenu                = "TopicConfirmPageMenu"
 	CopyConsumerGroupPageMenu           = "CopyConsumerGroupPageMenu"
 	CopyConnectorOffsetsPageMenu        = "CopyConnectorOffsetsPageMenu"
 	ConsumerGroupsPageMenu              = "ConsumerGroupsPageMenu"
@@ -310,8 +327,6 @@ const (
 	CliTemplatesPageMenu                = "CliTemplatesPageMenu"
 	CliExecutePageMenu                  = "CliExecutePageMenu"
 	ConnectorsPageMenu                  = "ConnectorsPageMenu"
-	ConnectorConfigEditPageMenu         = "ConnectorConfigEditPageMenu"
-	CreateConnectorPageMenu             = "CreateConnectorPageMenu"
 	ConnectorActionsPageMenu            = "ConnectorActionsPageMenu"
 	ConnectPageMenu                     = "ConnectPageMenu"
 	FindByPageMenu                      = "FindByPageMenu"
@@ -351,6 +366,10 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 		Content: table,
 		Flex:    flex,
 		Map: &map[string]*[]string{
+			ConfirmationMenu: {
+				"answer_yes",
+				"answer_no",
+			},
 			ResourcesPageMenu: {
 				"sel",
 				"resource_search",
@@ -470,14 +489,6 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"opened",
 				"b/f",
 			},
-			OffsetsConfirmPageMenu: {
-				"submit_ctrl",
-				"cancel",
-			},
-			TopicConfirmPageMenu: {
-				"submit_ctrl",
-				"cancel",
-			},
 			ConsumerGroupDescribePageMenu: {
 				"res",
 				"reset_offset",
@@ -534,6 +545,7 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"search",
 				"opened",
 				"upd",
+				"delete_subj",
 				"extra_actions",
 				"b/f",
 			},
@@ -543,7 +555,7 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"dsc",
 				"opened",
 				"upd",
-				"extra_actions",
+				"delete_ver",
 				"b/f",
 			},
 			ConnectorsPageMenu: {
@@ -580,10 +592,9 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"b/f",
 			},
 			ConnectorOffsetsPageMenu: {
-				"hjkl",
 				"upd",
 				"delete_offsets",
-				"copy_offsets",
+				"clone_offsets",
 				"close",
 			},
 			TaskActionsPageMenu: {
@@ -591,14 +602,6 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 				"switch_act",
 				"submit_ctrl",
 				"close",
-			},
-			ConnectorConfigEditPageMenu: {
-				"submit_ctrl",
-				"cancel",
-			},
-			CreateConnectorPageMenu: {
-				"submit_ctrl",
-				"cancel",
 			},
 			ConnectorActionsPageMenu: {
 				"switch_act",
@@ -667,8 +670,37 @@ func NewMenu(colors *config.ColorConfig, cfg *config.Config) *Menu {
 	}
 }
 
-// SetMenu redraws the keybinding bar with the entries registered for the given PageMenu.
+// SetMenu redraws the keybinding bar with the entries registered for the given PageMenu. While
+// the bar is pinned the menu is remembered but not painted, so that Unpin lands on the page that
+// is in front by then rather than on the one that was in front when the bar was pinned.
 func (m *Menu) SetMenu(menu string) {
+	m.current = menu
+	if m.pinned {
+		return
+	}
+	m.render(menu)
+}
+
+// Pin paints the given menu and holds the bar on it until Unpin. It is for a standing question,
+// which consumes every keypress: what the page underneath advertises would all do nothing, and a
+// page rebuilt by a background refresh must not put those bindings back under the question.
+//
+// ConfirmationMenu is the one it is pinned to. It repeats the [Y/N] the question itself reads,
+// because <?> does not open the key reference over a standing question — the bar is the only one
+// on screen at that point — and it adds the <Esc> the question does not mention.
+func (m *Menu) Pin(menu string) {
+	m.pinned = true
+	m.render(menu)
+}
+
+// Unpin releases the bar and paints the menu last asked for, which is the one belonging to
+// whatever page is in front by then.
+func (m *Menu) Unpin() {
+	m.pinned = false
+	m.render(m.current)
+}
+
+func (m *Menu) render(menu string) {
 	m.Content.Clear()
 	if keyBindings, ok := (*m.Map)[menu]; ok {
 		row := 0

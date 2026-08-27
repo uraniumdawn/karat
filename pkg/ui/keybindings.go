@@ -19,6 +19,25 @@ func IsCtrlEnter(event *tcell.EventKey) bool {
 	return event.Key() == tcell.KeyEnter && event.Modifiers()&tcell.ModCtrl != 0
 }
 
+// isScrollKey reports whether the event is one of the keys tview's TextView moves the view with.
+// A key that only scrolls is not an answer to anything, which is what lets a standing question
+// hand it on to the page it is asked over.
+func isScrollKey(event *tcell.EventKey) bool {
+	switch event.Key() {
+	case tcell.KeyUp, tcell.KeyDown, tcell.KeyLeft, tcell.KeyRight,
+		tcell.KeyHome, tcell.KeyEnd, tcell.KeyPgUp, tcell.KeyPgDn,
+		tcell.KeyCtrlF, tcell.KeyCtrlB:
+		return true
+	case tcell.KeyRune:
+		switch event.Rune() {
+		case 'g', 'G', 'j', 'k', 'h', 'l':
+			return true
+		}
+	}
+
+	return false
+}
+
 func (app *App) OpenPagesKeyHandler(filteredTable *tview.Table) {
 	registry := app.Layout.PagesRegistry
 	searchInput := registry.UI.SearchInput
@@ -164,6 +183,9 @@ func (app *App) MainOperationKeyHandler() {
 		// leaves it hidden with its pending action stranded, and nothing brings it back, so the
 		// keys that would navigate off it do nothing while it stands. <h>/<l> are covered by
 		// IsPersistentPage below, for the same reason.
+		//
+		// The question standing over such a page consumes these keys before they reach here.
+		// This is the net behind that, not the mechanism.
 		if event.Key() == tcell.KeyCtrlP || IsKey(event, ':') {
 			if app.confirmationInFront() {
 				SendStatusNote("finish the open confirmation first")
@@ -172,7 +194,8 @@ func (app *App) MainOperationKeyHandler() {
 		}
 
 		// The key reference is available from anywhere a key means a command rather than a
-		// character, including on top of a confirmation: it only reads, and Esc puts it away.
+		// character: it only reads, and Esc puts it away. Not over a standing question, which
+		// is answered above — Esc there would cancel the question rather than close the help.
 		if IsKey(event, '?') && !app.IsSearchInFocus() && !app.IsInputFieldInFocus() {
 			currentPage, _ := app.Layout.PagesRegistry.UI.Pages.GetFrontPage()
 			if currentPage != Help {
