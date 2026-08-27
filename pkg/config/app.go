@@ -209,7 +209,44 @@ func mergeAppConfig(userConfig []byte) (*Config, error) {
 	}
 	cfg.literal = literal
 
+	// CLI templates are the one part of the config that is text for a shell, not a value for
+	// karat, so they keep the ${VAR} references the user wrote: sh expands them when the
+	// command runs, and until then the command stays the portable one the user can read, yank
+	// and paste elsewhere. Expanding them here would also swallow a $ that was never a
+	// variable, such as a jq filter's $name.
+	if templates, ok := literalCliTemplates(literal); ok {
+		cfg.Karat.CliTemplates = templates
+	}
+
 	return cfg, nil
+}
+
+// literalCliTemplates returns karat.cli_templates as the user wrote them, and reports whether
+// the literal tree held them in that shape. A tree karat could not read leaves the expanded
+// templates in place: a command with the values in it still runs.
+func literalCliTemplates(literal any) ([]string, bool) {
+	root, ok := literal.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	karat, ok := root["karat"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	entries, ok := karat["cli_templates"].([]any)
+	if !ok {
+		return nil, false
+	}
+
+	templates := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		text, ok := entry.(string)
+		if !ok {
+			return nil, false
+		}
+		templates = append(templates, text)
+	}
+	return templates, true
 }
 
 // literalTree merges the user config into the defaults without expanding environment

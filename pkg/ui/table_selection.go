@@ -10,9 +10,8 @@ import (
 	"github.com/rivo/tview"
 )
 
-// Where a list page's rows begin. Most pages label their columns in row 0 and keep it fixed;
-// the subject and version lists are a bare column of names with no header at all, and on those
-// row 0 is data like any other.
+// Where a table's rows begin. Every list page labels its columns in row 0 and keeps it fixed,
+// so data starts at row 1; firstRow is for a table without a header row.
 const (
 	afterHeaderRow = 1
 	firstRow       = 0

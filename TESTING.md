@@ -59,10 +59,13 @@ bug from the inside.
 - [ ] 2.4 read-only: every modifying action is refused with a status-line message, and nothing
       reaches the cluster.
 - [ ] 2.5 confirm: a modifying action asks in the status line; `Y` runs it, `N` and `Esc`
-      abandon it; while the question stands no other key does anything.
+      abandon it; while the question stands no other key does anything and the keybinding bar
+      reads `<Y> Yes  <N/Esc> Cancel`, coming back as it was once the question is answered.
+- [ ] 2.5a Lowercase `y` and `n` answer nothing: the question keeps standing and the action
+      neither runs nor is abandoned.
 - [ ] 2.6 yolo: a modifying action runs with no question.
-- [ ] 2.7 A mode switched while an editor or a confirmation page is open is honoured at apply
-      time, not at open time.
+- [ ] 2.7 A mode switched while an editor is open is honoured when the change is applied, not
+      when the editor opened.
 
 ## 3. Navigation
 
@@ -70,7 +73,7 @@ bug from the inside.
       and `Enter` (twice: once to leave the field, once to select) opens the resource.
 - [ ] 3.2 Every resource opens: Clusters, Schema-registries, Connect, Nodes, Topics, Consumer
       groups, Transactions, ACLs, Subjects, Connectors.
-- [ ] 3.3 `l` / `h` walk forward and backward through the opened pages in the order they were
+- [ ] 3.3 `f` / `b` walk forward and backward through the opened pages in the order they were
       opened, a newly opened page sitting right after the page that opened it.
 - [ ] 3.4 `Ctrl+P` lists the opened pages; `/` filters them fuzzily; `Enter` switches — including
       straight after typing a filter, without moving the cursor first.
@@ -79,13 +82,19 @@ bug from the inside.
 - [ ] 3.6 The opened-pages modal opens with the current page selected, so `Esc` without moving
       the cursor leaves you on that page instead of jumping to the first one in the list.
 - [ ] 3.7 A confirmation page (topic create/update, offsets, connector config/create) never
-      appears in the opened-pages list and `h`/`l` never step into it.
-- [ ] 3.8 `Ctrl+P` and `:` on a confirmation page are refused with `finish the open
-      confirmation first`, and both work again once it is applied or abandoned.
+      appears in the opened-pages list and `b`/`f` never step into it.
+- [ ] 3.8 `Ctrl+P` and `:` on a confirmation page do nothing, and both work again once it is
+      applied or abandoned.
 - [ ] 3.9 Re-opening an already open page reuses it (served from cache) instead of refetching.
 - [ ] 3.10 `Ctrl+U` forces a refresh of the current page, bypassing the cache.
 - [ ] 3.11 `Ctrl+C` quits from anywhere; `Esc` closes a modal rather than quitting. No other
       key quits.
+- [ ] 3.12 `?` opens the key reference: the global bindings, then the ones the page in front
+      adds. `Esc` or `?` puts it away and the keybinding bar comes back as it was.
+- [ ] 3.13 The reference matches the bar it was read from, on a page with a menu of its own
+      (Topics, say) and on one without (a confirmation page: global section only).
+- [ ] 3.14 `?` types a literal `?` while a search or an input field has focus, and does nothing
+      while a `[Y/N]` question stands.
 
 ## 4. Clusters, nodes, cluster config
 
@@ -118,12 +127,17 @@ bug from the inside.
 - [ ] 6.1 `n` opens the new-topic document in the editor.
 - [ ] 6.2 Submitting it opens the confirmation page showing name, partitions, replication and
       configs.
-- [ ] 6.3 `Ctrl+Enter` creates the topic; **the topics list then shows it without a manual
-      refresh**.
-- [ ] 6.4 `Esc` on the confirmation page creates nothing.
+- [ ] 6.3 The question `create topic '<name>'? [Y/N]` stands on the status line with `<Y> Yes
+      <N/Esc> Cancel` on the keybinding bar; `Y` creates the topic; **the topics list then shows
+      it without a manual refresh**.
+- [ ] 6.4 `N` or `Esc` on the confirmation page creates nothing, says `cancelled`, and takes
+      the page down.
+- [ ] 6.4a `Ctrl+Enter` on a confirmation page does nothing at all.
+- [ ] 6.4b A confirmation page longer than the terminal scrolls with `j`/`k`/`g`/`G` and
+      `PgUp`/`PgDn` while the question stands.
 - [ ] 6.5 A document that changes nothing reports "no changes detected" and opens no page.
 - [ ] 6.6 `e` edits a topic: partition increase and config changes are shown as a diff and
-      applied on `Ctrl+Enter`.
+      applied on `Y`.
 - [ ] 6.7 A partition *decrease* is refused with a clear message.
 - [ ] 6.8 `Ctrl+D` deletes a topic after the mode's confirmation; **the topics list then drops
       it without a manual refresh**.
@@ -140,14 +154,18 @@ bug from the inside.
 
 - [ ] 7.1 `d` shows partitions, leaders, replicas, ISR, offsets and the effective config; the
       Size line carries the real on-disk size, or says it is unavailable — never a guess.
-- [ ] 7.2 `H`/`L` scroll a wide description horizontally.
+- [ ] 7.2 `h`/`l` scroll a wide description horizontally, five columns at a time.
 - [ ] 7.3 The producers view lists the producers writing to the topic. Only idempotent and
       transactional producers register with the broker, so check it against `txn-events` with
       the `txn` profile running — the data generator writes without idempotence and never
       appears there.
-- [ ] 7.4 Extra actions (`.`) → CLI commands opens the templates for the topic; `c` copies a
-      command, `e` executes it and streams the output; `t` terminates and `Ctrl+K` kills the
+- [ ] 7.4 Extra actions (`.`) → CLI commands opens the templates for the topic; `y` copies a
+      command, `Enter` executes it and streams the output; `t` terminates and `Ctrl+K` kills the
       process.
+- [ ] 7.5 A template naming an environment variable (`-X sasl.password=${SASL_PASSWORD}`) is
+      listed, copied and executed with the reference as written, never with the value in it: the
+      shell expands it when the command runs. A `$` that is not a variable — a jq filter's
+      `$value` — survives too.
 
 ## 8. Consume
 
@@ -186,10 +204,10 @@ bug from the inside.
 - [ ] 9.2 `features.consumer_group_lag: false` drops both the column and the extra calls.
 - [ ] 9.3 `1`/`2`/`3` sort by name, state and lag.
 - [ ] 9.4 `d` describes a group: members, assignments, committed offsets, lag per partition.
-- [ ] 9.5 `g` enters auto-update mode, `Tab` sets the interval, `Esc` leaves it, and the page
-      refreshes on that interval.
-- [ ] 9.6 `o` resets offsets by topic and `O` by partition: the editor opens, the confirmation
-      page lists the pending changes, `Ctrl+Enter` commits them.
+- [ ] 9.5 `a` enters auto-update mode, `Tab` sets the interval, `Esc` leaves it, and the page
+      refreshes on that interval, the title counting down to the next refresh.
+- [ ] 9.6 `e` resets offsets by topic and `E` by partition: the editor opens, the confirmation
+      page lists the pending changes, `Y` commits them.
 - [ ] 9.7 A target outside the partition's range is refused before anything is committed.
 - [ ] 9.8 Resetting offsets for a live group behaves (either refused or applied once the group
       is empty — whichever karat claims).
@@ -226,8 +244,12 @@ bug from the inside.
 - [ ] 12.6 Find by schema id resolves an id to its schema, with the subjects and versions it is
       registered under in the page title.
 - [ ] 12.7 Extra actions → Clone subject: registers the schema under a new subject name.
-- [ ] 12.8 Extra actions → Delete subject and Delete version, each behind the mode's
-      confirmation, and the list updates afterwards.
+- [ ] 12.8 `Ctrl+D` on the Subjects list asks `delete subject '<name>'? [Y/N]`; `Y` deletes it
+      and the list drops it; read-only refuses with the mode's message.
+- [ ] 12.8a `Ctrl+D` on the Versions page asks `delete version <n> of subject '<name>'? [Y/N]`,
+      behind the same three modes, and the list updates afterwards.
+- [ ] 12.8b `.` on the Versions page does nothing — no empty modal — and `.` on the Subjects
+      list offers Find schema by ID and Clone subject only.
 - [ ] 12.9 A registry that is unreachable reports the error and leaves the UI usable.
 
 ## 13. Kafka Connect
@@ -237,15 +259,16 @@ bug from the inside.
       and task state; the broken one shows FAILED.
 - [ ] 13.3 `1`/`2`/`3` sort; `/` filters.
 - [ ] 13.4 `d` describes a connector: config, tasks, and the failure trace for the broken one.
-- [ ] 13.5 `a` on a connector: pause, resume, restart — the state on the list follows.
-- [ ] 13.6 `a` on a running connector's task: restart the task.
-- [ ] 13.7 `e` edits the config in the editor; the confirmation page shows the new JSON;
-      `Ctrl+Enter` applies it and the description reflects it.
+- [ ] 13.5 `.` on a connector: pause, resume, restart — the state on the list follows.
+- [ ] 13.6 `.` on a running connector's task: restart the task.
+- [ ] 13.7 `e` edits the config in the editor; the confirmation page shows the new JSON; `Y`
+      applies it and the description reflects it.
 - [ ] 13.8 `n` creates a connector from `{"name": ..., "config": {...}}`; invalid JSON, an
       empty name and an empty config are each refused with a reason.
 - [ ] 13.9 A config the worker rejects (bad converter class) surfaces the worker's 400 message.
 - [ ] 13.10 `Ctrl+D` deletes a connector; the list drops it without a manual refresh.
-- [ ] 13.11 `o` shows connector offsets; `c` copies them; `Ctrl+D` deletes them.
+- [ ] 13.11 `o` shows connector offsets; `n` clones them onto another connector and `y` does
+      nothing; `Ctrl+D` deletes them.
 - [ ] 13.12 A Connect cluster that is down reports it on the status line.
 
 ## 14. Search, status line, editor

@@ -49,7 +49,7 @@ same keys on a version show the schema:
 - **Topics as a document** — `n`, `e` and "Clone topic" open the topic as YAML in your editor. Settings still at their cluster default come along as commented-out lines, so overriding one is a matter of uncommenting it, and deleting a config line resets it. A review page shows what will change before anything is applied.
 - **Topic producers** — active producers and in-flight transactions, per partition.
 - **Hide internal topics** — `i` hides `__*`, `*-changelog` and `*-repartition`. The patterns are yours to change.
-- **Extra actions menu** — `.` opens the actions for whatever is under the cursor: on a topic, Consume, CLI commands, Producers, Consumer groups, Clone topic, Recreate topic; on a connector, pause/resume/restart; on a running connector's page, its task actions.
+- **Extra actions menu** — `.` opens the actions for whatever is under the cursor: on a topic, Consume, CLI commands, Producers, Consumer groups, Clone topic, Recreate topic; on a subject, Find schema by ID and Clone subject; on a connector, pause/resume/restart; on a running connector's page, its task actions. What lives here is navigation, an operation compound enough to want reading before it runs, and one that destroys data — a plain create, delete or edit is on `n`, `Ctrl+D` and `e` instead.
 - **Consumer** — kcat-style parameters: offsets, timestamps, partitions, avro/pack deserialization, output format, filter. Reading never commits: karat consumes under its own ephemeral group id, so browsing a topic cannot move anyone's offsets. `c` on the Topics list starts consuming right away with the defaults, `F1` shows the flag reference, and `Ctrl+O` opens the parameters in your editor with that reference inlined as comments.
 - **Avro decoding** — `-d key=avro -d value=avro -r <sr-name>`. `-d` chooses what gets decoded, `-r` names the schema registry to decode it against; `-r` on its own decodes nothing. `-d avro` is the shorthand for both, so a topic with a string key wants `-d value=avro` alone. Schemas are resolved by the id carried in each payload, so a topic whose schema changed mid-stream still reads. Payloads without the Confluent magic byte fall back to raw output instead of failing.
 - **Defaults** — a topic you have never consumed starts with `-o 100 -d key=avro -d value=avro -r <sr-name> -f '{…}'`, or the same without the `-d`/`-r` when no Schema Registry is selected: the last 100 records per partition, key and value decoded when there is something to decode them with, rendered as `{"Key":…,"Value":…,"Timestamp":…,"Partition":…,"Offset":…,"Headers":…,"Size":…}` — one JSON object per line. Key and value are spelled out rather than written as the equivalent bare `-d avro`, so a string key is one deleted flag away.
@@ -91,7 +91,7 @@ Keys mean the same thing wherever they appear:
 | `Ctrl+P` | Opened pages |
 | `b` / `f` | Previous / next opened page |
 | `h` / `l` | Scroll a description or a wide table sideways |
-| `a` | Auto-update mode, on pages that support it |
+| `a` | Auto-update mode, on pages that support it. `Tab` picks the interval; the title shows it and counts down to the next refresh |
 | `?` | This list, for the page you are on |
 
 ## Available Resources
@@ -270,6 +270,8 @@ karat:
   #   {{bootstrap}} — broker address(es) from the selected cluster
   #   {{topic}}     — name of the selected topic
   #   {{srURL}}     — Schema Registry URL from the selected registry
+  # Environment variables are left as written and expanded by the shell when the command
+  # runs, so a yanked command stays portable and a jq filter's $name is not eaten.
   cli_templates:
     # kcat example - consume from beginning with JSON formatting
     - kcat -C -b {{bootstrap}} -t {{topic}} -o beginning -f '{"Key":"%k","Value":%s,"Timestamp":%T,"Partition":%p,"Offset":%o,"Headers":"%h","Size":%S}\n' -u | jq .
@@ -282,6 +284,9 @@ karat:
 
     # Custom script example
     - ./scripts/analyze-topic.sh {{bootstrap}} {{topic}}
+
+    # Environment variable example - ${SASL_PASSWORD} reaches kcat as written
+    - kcat -C -b {{bootstrap}} -t {{topic}} -X sasl.password=${SASL_PASSWORD}
 ```
 
 #### Important Configuration Notes
@@ -363,8 +368,8 @@ karat:
 **`config.yaml` is rewritten on startup.** Karat keeps the file equal to the configuration it is actually running, the built-in defaults merged in. The file is written only when it no longer matches, so a second run changes nothing — but **comments and hand-formatting do not survive it**, since the file is regenerated from the merged configuration rather than patched.
 
 **Confirmations:**
-- In `confirm` mode, deletions and topic recreation ask in the status line — `Y` goes ahead, `N` or `Esc` abandons. Every other key is ignored while the question stands
-- Editing a topic, offsets or a connector config still opens a confirmation page showing the diff, in every mode but `read-only`. That page is not part of the page history — `Ctrl+P`, `:`, `b` and `f` do nothing while it stands, so it cannot be left behind by accident
+- In `confirm` mode, every question is asked in the status line — `Y` goes ahead, `N` or `Esc` abandons. Both are uppercase: the shifted key is the one you cannot hit by brushing the keyboard on the way past, so lowercase `y` and `n` answer nothing. Every other key is ignored while the question stands, and the keybinding bar reads `<Y> Yes  <N/Esc> Cancel` since nothing the page underneath advertises would work
+- Editing a topic, offsets or a connector config still opens a confirmation page showing the diff, in every mode but `read-only`. The question is the same one and lives in the same place — `apply these changes to topic 'orders'? [Y/N]` on the status line — with the diff on screen to read it against, and the keys that scroll a long diff still reach it. The page comes down whichever way you answer. It is not part of the page history: `Ctrl+P`, `:`, `b` and `f` do nothing while it stands, so it cannot be left behind by accident
 
 **Transactions, ACLs, Topic Producers, and topic size:**
 - These features connect to the cluster via [franz-go](https://github.com/twmb/franz-go), built from the same `properties` as the cluster's main connection
@@ -400,7 +405,7 @@ Karat suspends the TUI and hands the terminal to your editor for these views:
 | Connector | `e` / `n` | Connector config JSON |
 | Consume parameters | `Ctrl+O` | Consume parameters |
 
-Topic and offset editing end on a confirmation page showing exactly what will be applied — nothing reaches the cluster until you press `Ctrl+Enter` there.
+Topic and offset editing end on a confirmation page showing exactly what will be applied — nothing reaches the cluster until you answer `Y` to the question on the status line.
 
 **Choosing the editor.** `karat.editor` in `config.yaml` is the only place Karat looks, so name the editor you want there. It defaults to `vim` and is split on whitespace, so flags are allowed:
 

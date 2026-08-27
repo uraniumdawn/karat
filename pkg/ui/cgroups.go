@@ -682,8 +682,8 @@ func (app *App) ResolveConsumerGroupOffsets(
 	}()
 }
 
-// ConsumerGroupOffsetsConfirm shows the pending per-partition changes and commits them on
-// Ctrl+Enter. Targets that fall outside their partition's log are refused here rather than
+// ConsumerGroupOffsetsConfirm shows the pending per-partition changes and commits them once the
+// question in the status line is answered. Targets that fall outside their partition's log are refused here rather than
 // sent: the broker accepts an out-of-range commit and the consumer then silently overrides
 // it via auto.offset.reset. It reports whether the confirmation page opened — a refusal
 // leaves the caller's UI as it was, with the reason on the status line.
@@ -703,37 +703,12 @@ func (app *App) ConsumerGroupOffsetsConfirm(
 		return false
 	}
 
-	messageText := tview.NewTextView().
-		SetText(renderOffsetChanges(group, changes)).
-		SetTextAlign(tview.AlignLeft).
-		SetDynamicColors(false)
-
-	messageText.SetBorder(true).
-		SetTitle(fmt.Sprintf(" Confirm Offsets: %s ", group)).
-		SetBorderPadding(0, 0, 1, 1)
-
-	messageText.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if IsCtrlEnter(event) {
-			// Re-checked at apply time: the mode can have been toggled while the page stood
-			// open. The page itself is the confirmation, so nothing more is asked.
-			if !app.Allowed() {
-				return nil
-			}
-			app.SetConsumerGroupOffsetsResultHandler(group, changes)
-			app.RemoveTransientPage(OffsetsConfirm)
-			return nil
-		}
-
-		if event.Key() == tcell.KeyEsc {
-			app.RemoveTransientPage(OffsetsConfirm)
-			return nil
-		}
-
-		return event
-	})
-
-	ClearStatus()
-	app.AddTransientPage(OffsetsConfirm, messageText, OffsetsConfirmPageMenu)
+	app.ConfirmPage(
+		OffsetsConfirm,
+		newConfirmView(fmt.Sprintf(" Confirm Offsets: %s ", group), renderOffsetChanges(group, changes)),
+		fmt.Sprintf("commit these offsets for consumer group '%s'?", group),
+		func() { app.SetConsumerGroupOffsetsResultHandler(group, changes) },
+	)
 
 	return true
 }

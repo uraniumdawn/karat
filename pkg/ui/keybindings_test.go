@@ -35,9 +35,8 @@ func TestCtrlCIsNeverSwallowed(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			defer drainStatus()
 
-			cfg := &config.Config{}
-			cfg.SetMode(config.Confirm)
-			app := &App{Application: tview.NewApplication(), Config: cfg}
+			app := newConfirmApp(t, config.Confirm)
+			app.Application = tview.NewApplication()
 			app.MainOperationKeyHandler()
 			tt.setUp(app)
 
@@ -53,9 +52,8 @@ func TestCtrlCIsNeverSwallowed(t *testing.T) {
 func TestStandingQuestionStillConsumesOtherKeys(t *testing.T) {
 	defer drainStatus()
 
-	cfg := &config.Config{}
-	cfg.SetMode(config.Confirm)
-	app := &App{Application: tview.NewApplication(), Config: cfg}
+	app := newConfirmApp(t, config.Confirm)
+	app.Application = tview.NewApplication()
 	app.MainOperationKeyHandler()
 
 	yes := 0
@@ -64,8 +62,8 @@ func TestStandingQuestionStillConsumesOtherKeys(t *testing.T) {
 	if got := app.GetInputCapture()(keyRune('j')); got != nil {
 		t.Errorf("input capture returned %v for an unrelated key, want it consumed", got)
 	}
-	if got := app.GetInputCapture()(keyRune('y')); got != nil {
-		t.Errorf("input capture returned %v for <y>, want it consumed", got)
+	if got := app.GetInputCapture()(keyRune('Y')); got != nil {
+		t.Errorf("input capture returned %v for <Y>, want it consumed", got)
 	}
 	if yes != 1 {
 		t.Errorf("the operation ran %d times, want 1", yes)

@@ -41,6 +41,13 @@ type UI struct {
 	Main          tview.Primitive
 }
 
+// titledPrimitive is a page whose title karat writes: the last-refresh timestamp appended when
+// the page opens, and the auto-update countdown repainted while it stands.
+type titledPrimitive interface {
+	GetTitle() string
+	SetTitle(string) *tview.Box
+}
+
 // Expiration is the default cache expiration time.
 const Expiration = time.Minute * 5
 
@@ -183,10 +190,6 @@ func (app *App) AddToPagesRegistry(
 
 	app.Cache.Set(name, name, Expiration)
 
-	type titledPrimitive interface {
-		GetTitle() string
-		SetTitle(string) *tview.Box
-	}
 	if t, ok := component.(titledPrimitive); ok {
 		ts := time.Now().Format("2006-01-02T15:04:05")
 		t.SetTitle(strings.TrimRight(t.GetTitle(), " ") + " [" + ts + "] ")
@@ -200,15 +203,19 @@ func (app *App) AddToPagesRegistry(
 	registry.UI.Pages.AddAndSwitchToPage(name, component, true)
 }
 
-// AddTransientPage shows a page that stands outside the opened-pages registry: a
+// addTransientPage shows a page that stands outside the opened-pages registry: a
 // confirmation the user either applies or abandons, and which is gone either way. It is
 // never listed in the opened-pages modal, <h>/<l> never iterate into it, and it is not
 // cached — reopening it means going through the action that produces it again.
 //
-// RemoveTransientPage is the only way back: it returns to the page that was in front here.
-func (app *App) AddTransientPage(name string, component tview.Primitive, menu string) {
+// It has no menu of its own: the question it is read for consumes every keypress, so the bar
+// carries the answer to that question instead. Only ConfirmPage may put one up, because
+// ConfirmPage is what installs the question — a transient page without one has no keys at all
+// and no way off it.
+//
+// removeTransientPage is the only way back: it returns to the page that was in front here.
+func (app *App) addTransientPage(name string, component tview.Primitive) {
 	registry := app.Layout.PagesRegistry
-	registry.PageMenuMap[name] = menu
 
 	// Recorded even when there is nothing to return to, so that the entry itself is what marks
 	// the page as transient.
@@ -218,19 +225,21 @@ func (app *App) AddTransientPage(name string, component tview.Primitive, menu st
 	}
 	registry.transientReturn[name] = previous
 
-	app.Layout.Menu.SetMenu(menu)
+	// Not the menu of the page underneath: that page is no longer in front, and with nothing to
+	// return to it would be the bar that comes back.
+	app.Layout.Menu.SetMenu("")
 	registry.UI.Pages.AddAndSwitchToPage(name, component, true)
 }
 
-// IsTransientPage reports whether name is a confirmation page put up by AddTransientPage.
+// IsTransientPage reports whether name is a confirmation page put up by addTransientPage.
 func (pr *PagesRegistry) IsTransientPage(name string) bool {
 	_, ok := pr.transientReturn[name]
 	return ok
 }
 
-// RemoveTransientPage removes a page added by AddTransientPage and switches back to the
+// removeTransientPage removes a page added by addTransientPage and switches back to the
 // page that was in front when it opened.
-func (app *App) RemoveTransientPage(name string) {
+func (app *App) removeTransientPage(name string) {
 	registry := app.Layout.PagesRegistry
 
 	registry.UI.Pages.RemovePage(name)

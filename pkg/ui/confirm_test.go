@@ -5,18 +5,38 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"github.com/uraniumdawn/karat/pkg/config"
 )
 
-// newConfirmApp builds the least App a confirmation needs: a mode, and no UI.
-func newConfirmApp(mode config.Mode) *App {
+// newConfirmApp builds the least App a confirmation needs: a mode, and the keybinding bar the
+// question takes down and puts back.
+//
+// It restores the tview package-level borders NewLayout writes, so a test cannot leak them into
+// the next one.
+func newConfirmApp(tb testing.TB, mode config.Mode) *App {
+	tb.Helper()
+
+	borders := tview.Borders
+	tb.Cleanup(func() { tview.Borders = borders })
+
+	colors, err := config.LoadColorConfig("")
+	if err != nil {
+		tb.Fatalf("LoadColorConfig() error = %v", err)
+	}
+
 	cfg := &config.Config{}
 	cfg.SetMode(mode)
-	return &App{Config: cfg}
+
+	app := &App{Config: cfg, Colors: colors}
+	app.Layout = NewLayout(NewPagesRegistry(colors), colors, cfg, true, true)
+
+	return app
 }
 
 // drainStatus empties the status channel, which has no handler running in a test.
@@ -42,10 +62,12 @@ func TestConfirmAnswers(t *testing.T) {
 		// wantPending is whether the question still stands after the keypress.
 		wantPending bool
 	}{
-		{name: "y confirms", event: keyRune('y'), wantYes: true},
-		{name: "uppercase Y confirms", event: keyRune('Y'), wantYes: true},
-		{name: "n abandons", event: keyRune('n')},
-		{name: "uppercase N abandons", event: keyRune('N')},
+		{name: "Y confirms", event: keyRune('Y'), wantYes: true},
+		{name: "N abandons", event: keyRune('N')},
+		// The shifted key is the one the user cannot hit by brushing the keyboard on the way
+		// past, so the unshifted one answers nothing and the question keeps standing.
+		{name: "lowercase y is ignored", event: keyRune('y'), wantPending: true},
+		{name: "lowercase n is ignored", event: keyRune('n'), wantPending: true},
 		{
 			name:  "esc abandons",
 			event: tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone),
@@ -67,7 +89,7 @@ func TestConfirmAnswers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			defer drainStatus()
 
-			app := newConfirmApp("")
+			app := newConfirmApp(t, "")
 			yes := 0
 			app.Confirm("delete it?", func() { yes++ })
 
@@ -94,12 +116,12 @@ func TestConfirmAnswers(t *testing.T) {
 func TestConfirmRunsOnceOnRepeatedYes(t *testing.T) {
 	defer drainStatus()
 
-	app := newConfirmApp("")
+	app := newConfirmApp(t, "")
 	yes := 0
 	app.Confirm("delete it?", func() { yes++ })
 
-	app.answer(keyRune('y'))
-	if consumed := app.answer(keyRune('y')); consumed {
+	app.answer(keyRune('Y'))
+	if consumed := app.answer(keyRune('Y')); consumed {
 		t.Errorf("answer() = true with no question pending, want the keypress passed through")
 	}
 	if yes != 1 {
@@ -108,8 +130,8 @@ func TestConfirmRunsOnceOnRepeatedYes(t *testing.T) {
 }
 
 func TestAnswerPassesKeysThroughWithNoQuestion(t *testing.T) {
-	app := newConfirmApp("")
-	if app.answer(keyRune('y')) {
+	app := newConfirmApp(t, "")
+	if app.answer(keyRune('Y')) {
 		t.Errorf("answer() = true with no question pending, want false")
 	}
 }
@@ -132,7 +154,7 @@ func TestModifyByMode(t *testing.T) {
 		t.Run(string(m.mode), func(t *testing.T) {
 			defer drainStatus()
 
-			app := newConfirmApp(m.mode)
+			app := newConfirmApp(t, m.mode)
 			ran := 0
 			app.Modify("delete it?", func() { ran++ })
 
@@ -146,7 +168,7 @@ func TestModifyByMode(t *testing.T) {
 
 			// Only a standing question swallows keys: refused and already run both leave the
 			// application answering to its own keys again.
-			if got := app.answer(keyRune('y')); got != m.wantPending {
+			if got := app.answer(keyRune('Y')); got != m.wantPending {
 				t.Errorf("answer() consumed the keypress = %v, want %v", got, m.wantPending)
 			}
 			if m.mode == config.ReadOnly && ran != 0 {
@@ -160,11 +182,11 @@ func TestModifyByMode(t *testing.T) {
 func TestAllowed(t *testing.T) {
 	defer drainStatus()
 
-	if app := newConfirmApp(config.ReadOnly); app.Allowed() {
+	if app := newConfirmApp(t, config.ReadOnly); app.Allowed() {
 		t.Errorf("Allowed() = true in read-only mode")
 	}
 
-	app := newConfirmApp(config.Confirm)
+	app := newConfirmApp(t, config.Confirm)
 	if !app.Allowed() {
 		t.Errorf("Allowed() = false in confirm mode")
 	}
@@ -178,7 +200,7 @@ func TestAllowed(t *testing.T) {
 func TestModifyWithNoModeSet(t *testing.T) {
 	defer drainStatus()
 
-	app := &App{Config: &config.Config{}}
+	app := newConfirmApp(t, "")
 	ran := 0
 	app.Modify("delete it?", func() { ran++ })
 
@@ -195,7 +217,7 @@ func TestModifyWithNoModeSet(t *testing.T) {
 func TestConfirmSendsAPromptStatus(t *testing.T) {
 	defer drainStatus()
 
-	app := newConfirmApp("")
+	app := newConfirmApp(t, "")
 	app.Confirm("delete topic 'orders'?", func() {})
 
 	select {
@@ -214,5 +236,103 @@ func TestConfirmSendsAPromptStatus(t *testing.T) {
 		}
 	default:
 		t.Fatalf("Confirm() sent no status message")
+	}
+}
+
+// barKeys is what the keybinding bar is displaying, read out of the cells the menu renders into.
+func barKeys(menu *Menu) []string {
+	var displayed []string
+	for row := range menu.Content.GetRowCount() {
+		for col := 0; col < menu.Content.GetColumnCount(); col += 2 {
+			if cell := menu.Content.GetCell(row, col); cell != nil && cell.Text != "" {
+				displayed = append(displayed, cell.Text)
+			}
+		}
+	}
+
+	return displayed
+}
+
+// hasKey reports whether the bar is displaying the given key, whatever colour tag it carries.
+func hasKey(menu *Menu, key string) bool {
+	for _, displayed := range barKeys(menu) {
+		if strings.Contains(displayed, key) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// assertAnswerBar checks the bar is carrying the answer to a standing question and nothing else.
+func assertAnswerBar(tb testing.TB, menu *Menu) {
+	tb.Helper()
+
+	displayed := barKeys(menu)
+	if len(displayed) != 2 || !hasKey(menu, "<Y>") || !hasKey(menu, "<N/Esc>") {
+		tb.Errorf("bar = %v, want <Y> and <N/Esc> alone", displayed)
+	}
+}
+
+// While a question stands, none of what the page underneath advertises works, so the bar carries
+// the answer instead — and goes back to that page's own bindings however the question is
+// answered.
+func TestConfirmPutsTheAnswerOnTheKeybindingBar(t *testing.T) {
+	tests := map[string]*tcell.EventKey{
+		"answered yes": keyRune('Y'),
+		"answered no":  keyRune('N'),
+		"abandoned":    tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone),
+	}
+
+	for name, event := range tests {
+		t.Run(name, func(t *testing.T) {
+			defer drainStatus()
+
+			app := newConfirmApp(t, "")
+			menu := app.Layout.Menu
+			menu.SetMenu(TopicsPageMenu)
+			standing := menu.Content.GetRowCount()
+			if standing == 0 {
+				t.Fatalf("the bar is empty before the question, nothing to replace")
+			}
+
+			app.Confirm("delete it?", func() {})
+			assertAnswerBar(t, menu)
+
+			// A page rebuilt by a background refresh must not put its own bindings back under the
+			// question.
+			menu.SetMenu(TopicsPageMenu)
+			assertAnswerBar(t, menu)
+
+			app.answer(event)
+			if got := menu.Content.GetRowCount(); got != standing {
+				t.Errorf("bar rows after the answer = %d, want %d", got, standing)
+			}
+		})
+	}
+}
+
+// A menu set while the question stands is the one that comes back: the page underneath may have
+// been rebuilt into a different one by the time the answer arrives.
+func TestConfirmRestoresTheMenuSetWhilePinned(t *testing.T) {
+	defer drainStatus()
+
+	app := newConfirmApp(t, "")
+	menu := app.Layout.Menu
+	menu.SetMenu(TopicsPageMenu)
+
+	app.Confirm("delete it?", func() {})
+	menu.SetMenu(ConsumerGroupsPageMenu)
+	app.answer(keyRune('N'))
+
+	menu.SetMenu(ConsumerGroupsPageMenu)
+	want := menu.Content.GetRowCount()
+
+	app.Confirm("delete it?", func() {})
+	menu.SetMenu(ConsumerGroupsPageMenu)
+	app.answer(keyRune('N'))
+
+	if got := menu.Content.GetRowCount(); got != want {
+		t.Errorf("bar rows = %d, want %d", got, want)
 	}
 }
